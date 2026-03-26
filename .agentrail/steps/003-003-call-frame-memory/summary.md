@@ -1,0 +1,1 @@
+Added call frame panel (walks dynamic link chain from fp_vm), memory region map bar (code/estack/cstack/globals/heap), instruction count display, eval stack + VM state change highlighting. Fixed CLAUDE.md to include --next-slug/--next-prompt in complete step.

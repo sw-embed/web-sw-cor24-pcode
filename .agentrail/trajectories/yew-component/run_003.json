@@ -1,0 +1,11 @@
+{
+  "task_type": "yew-component",
+  "state": {
+    "number": 4,
+    "step": "004-memory-hex-viewer"
+  },
+  "action": "Read existing debugger.rs and debugger.css. Added HexRegion enum with ALL and label(). Added hex_region_range(), hex_highlight_addr(), call_depth(), run_until_depth() helper methods. Added StepOver/StepOut/SelectHexRegion/ToggleHexViewer messages. Built hex viewer panel with html\\! macro including select dropdown, hex table with 16-byte rows, ASCII sidebar, and highlight classes. Added CSS for hex panel layout. Verified with trunk build, cargo clippy, Playwright browser testing.",
+  "result": "success",
+  "reward": 1,
+  "timestamp": "2026-03-25T23:44:33"
+}

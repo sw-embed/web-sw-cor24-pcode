@@ -1,0 +1,9 @@
+number = 4
+slug = "004-memory-hex-viewer"
+status = "completed"
+description = "Add a hex dump memory viewer panel. Allow selecting which memory region to in..."
+role = "legacy"
+context_files = []
+created_at = "2026-03-25T21:36:08"
+completed_at = "2026-03-25T23:44:33"
+task_type = "yew-component"

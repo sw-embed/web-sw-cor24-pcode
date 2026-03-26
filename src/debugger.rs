@@ -2,9 +2,11 @@
 //! layer (primary) and COR24 host implementation layer (secondary drill-down).
 
 use crate::config::VmConfig;
+use crate::demos::DEMOS;
 use cor24_emulator::{Assembler, EmulatorCore, StopReason};
 use gloo::timers::callback::Timeout;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 /// Execution batch size per tick (instructions).
@@ -181,6 +183,14 @@ pub enum Msg {
     SelectHexRegion(String),
     /// Toggle hex viewer panel visibility.
     ToggleHexViewer,
+    /// Load a demo program by index.
+    LoadDemo(usize),
+    /// Send UART input text.
+    SendInput,
+    /// Update UART input field value.
+    InputChanged(String),
+    /// Handle keydown in UART input field.
+    InputKeyDown(KeyboardEvent),
 }
 
 pub struct Debugger {
@@ -219,6 +229,12 @@ pub struct Debugger {
     show_hex_viewer: bool,
     /// Currently selected memory region for hex viewer.
     hex_region: HexRegion,
+    /// Currently selected demo index.
+    selected_demo: Option<usize>,
+    /// UART input field text.
+    input: String,
+    /// UART receive queue (bytes waiting to be fed to emulator).
+    uart_rx_queue: VecDeque<u8>,
 }
 
 impl Debugger {
@@ -620,6 +636,30 @@ impl Debugger {
         }
     }
 
+    /// Feed one byte from the UART RX queue if the UART is ready.
+    fn feed_uart_byte(&mut self) {
+        if self.uart_rx_queue.is_empty() {
+            return;
+        }
+        // Check UART status: bit 0 = RX ready (should be 0 = not ready)
+        let status = self.emulator.read_byte(0xFF0101);
+        if status & 0x01 == 0
+            && let Some(byte) = self.uart_rx_queue.pop_front()
+        {
+            self.emulator.send_uart_byte(byte);
+        }
+    }
+
+    /// Patch code_seg with demo bytecodes.
+    fn patch_demo_bytecode(&mut self, bytecode: &[u8]) {
+        if self.code_seg_addr == 0 {
+            return;
+        }
+        for (i, &b) in bytecode.iter().enumerate() {
+            self.emulator.write_byte(self.code_seg_addr + i as u32, b);
+        }
+    }
+
     fn save_prev_state(&mut self) {
         let snap = self.emulator.snapshot();
         self.prev_regs = snap.regs;
@@ -670,6 +710,9 @@ impl Component for Debugger {
             show_host: false,
             show_hex_viewer: false,
             hex_region: HexRegion::Code,
+            selected_demo: None,
+            input: String::new(),
+            uart_rx_queue: VecDeque::new(),
         }
     }
 
@@ -684,6 +727,7 @@ impl Component for Debugger {
                     return false;
                 }
 
+                self.feed_uart_byte();
                 self.save_prev_state();
                 let result = self.emulator.run_batch(BATCH_SIZE);
                 self.instruction_count += result.instructions_run;
@@ -698,6 +742,8 @@ impl Component for Debugger {
             Msg::Reset => {
                 self.running = false;
                 self._tick_handle = None;
+                self.uart_rx_queue.clear();
+                self.selected_demo = None;
                 self.load_binary();
                 true
             }
@@ -860,6 +906,36 @@ impl Component for Debugger {
                 self.show_hex_viewer = !self.show_hex_viewer;
                 true
             }
+            Msg::LoadDemo(index) => {
+                if let Some(demo) = DEMOS.get(index) {
+                    self.selected_demo = Some(index);
+                    self.running = false;
+                    self._tick_handle = None;
+                    self.uart_rx_queue.clear();
+                    self.load_binary();
+                    // Patch code_seg with demo bytecodes
+                    self.patch_demo_bytecode(demo.bytecode);
+                }
+                true
+            }
+            Msg::SendInput => {
+                let text = std::mem::take(&mut self.input);
+                for b in text.bytes() {
+                    self.uart_rx_queue.push_back(b);
+                }
+                self.uart_rx_queue.push_back(b'\n');
+                true
+            }
+            Msg::InputChanged(val) => {
+                self.input = val;
+                false
+            }
+            Msg::InputKeyDown(e) => {
+                if e.key() == "Enter" {
+                    ctx.link().send_message(Msg::SendInput);
+                }
+                false
+            }
         }
     }
 
@@ -902,6 +978,24 @@ impl Component for Debugger {
                 <div class="control-bar">
                     <button onclick={link.callback(|_| Msg::Reset)}
                             class="btn btn-reset">{"Reset"}</button>
+                    <select class="demo-select" onchange={link.callback(|e: Event| {
+                        let target: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                        let idx: usize = target.value().parse().unwrap_or(0);
+                        Msg::LoadDemo(idx)
+                    })}>
+                        <option value="" selected={self.selected_demo.is_none()}>
+                            {"Demo\u{2026}"}
+                        </option>
+                        { for DEMOS.iter().enumerate().map(|(i, demo)| {
+                            let sel = self.selected_demo == Some(i);
+                            html! {
+                                <option value={i.to_string()} selected={sel}
+                                        title={demo.description}>
+                                    { &demo.name }
+                                </option>
+                            }
+                        })}
+                    </select>
                     <button onclick={link.callback(|_| Msg::StepPcode)}
                             class="btn btn-step"
                             disabled={self.halted}>{"Step P-Code"}</button>
@@ -1083,10 +1177,23 @@ impl Component for Debugger {
                             </div>
                         </div>
 
-                        // Output
+                        // Output + UART input
                         <div class="panel panel-output">
                             <h3>{"Output"}</h3>
                             <pre class="output-text">{ &self.output }</pre>
+                            <div class="uart-input">
+                                <input
+                                    type="text"
+                                    class="uart-field"
+                                    value={self.input.clone()}
+                                    oninput={link.callback(|e: InputEvent| {
+                                        let input: HtmlInputElement = e.target_unchecked_into();
+                                        Msg::InputChanged(input.value())
+                                    })}
+                                    onkeydown={link.callback(Msg::InputKeyDown)}
+                                    placeholder="UART input (Enter to send)"
+                                />
+                            </div>
                         </div>
                     </div>
 

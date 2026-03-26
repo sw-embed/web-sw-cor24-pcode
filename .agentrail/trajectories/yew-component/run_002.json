@@ -1,0 +1,11 @@
+{
+  "task_type": "yew-component",
+  "state": {
+    "number": 3,
+    "step": "003-call-frame-memory"
+  },
+  "action": "Read pvm.s call/enter/leave/ret to understand 12-byte frame layout. Walked fp_vm-12 chain for dynamic link traversal. Used web-tf24a memory_regions pattern for proportional bar. Added prev_eval_stack/prev_pcode_state for delta highlighting. Playwright for UI verification.",
+  "result": "success",
+  "reward": 1,
+  "timestamp": "2026-03-25T21:36:08"
+}
