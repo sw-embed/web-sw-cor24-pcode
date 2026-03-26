@@ -2,4 +2,4 @@
 dist = "dist"
 
 [serve]
-port = 9247
+port = 9198

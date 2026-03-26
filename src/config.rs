@@ -1,17 +1,7 @@
 //! VM configuration — selects which p-code VM assembly to load.
 
-/// Placeholder assembly source for initial scaffold.
-/// Will be replaced with actual pv24a VM assembly in later steps.
-const PLACEHOLDER_ASM: &str = "\
-    .org 0\n\
-    ld r0, #0x48\n\
-    out r0\n\
-    ld r0, #0x69\n\
-    out r0\n\
-    ld r0, #0x0A\n\
-    out r0\n\
-    halt\n\
-";
+/// P-code VM assembly from pv24a project (copied into asm/).
+const PVM_ASM: &str = include_str!("../asm/pvm.s");
 
 /// VM configuration holding the selected assembly source.
 pub struct VmConfig {
@@ -20,9 +10,7 @@ pub struct VmConfig {
 
 impl Default for VmConfig {
     fn default() -> Self {
-        Self {
-            source: PLACEHOLDER_ASM,
-        }
+        Self { source: PVM_ASM }
     }
 }
 

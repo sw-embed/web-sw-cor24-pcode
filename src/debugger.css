@@ -50,9 +50,27 @@
     border-color: var(--blue);
 }
 
+.btn-step-host {
+    color: var(--overlay2);
+    border-color: var(--overlay2);
+}
+
 .btn-run {
     color: var(--green);
     border-color: var(--green);
+}
+
+.btn-toggle {
+    color: var(--overlay1);
+    border-color: var(--overlay1);
+    font-size: 11px;
+    padding: 3px 8px;
+}
+
+.btn-toggle.active {
+    color: var(--peach);
+    border-color: var(--peach);
+    background: var(--surface1);
 }
 
 .status {
@@ -64,11 +82,16 @@
 
 .pc-display {
     font-size: 13px;
-    color: var(--overlay2);
+    color: var(--blue);
     margin-left: auto;
 }
 
-/* Main panels */
+.host-pc {
+    color: var(--overlay2);
+    margin-left: 12px;
+}
+
+/* Main panels — flexible columns */
 .panels {
     display: flex;
     flex: 1;
@@ -82,7 +105,7 @@
 }
 
 .panel h3 {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--blue);
     margin-bottom: 6px;
@@ -90,14 +113,233 @@
     letter-spacing: 0.05em;
 }
 
-/* Registers panel */
-.panel-registers {
-    width: 180px;
+/* P-Code disassembly panel (left) */
+.panel-disasm {
+    width: 280px;
     flex-shrink: 0;
     border-right: 1px solid var(--surface1);
     background: var(--mantle);
 }
 
+.disasm-init {
+    font-size: 12px;
+    color: var(--overlay1);
+    font-style: italic;
+    padding: 4px 0;
+}
+
+.disasm-view {
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.disasm-label {
+    color: var(--mauve);
+    font-weight: 600;
+    padding: 2px 0 0 0;
+}
+
+.disasm-line {
+    display: flex;
+    gap: 6px;
+    padding: 1px 4px;
+    border-radius: 2px;
+    white-space: nowrap;
+}
+
+.disasm-line.current {
+    background: var(--surface0);
+    font-weight: 600;
+}
+
+.disasm-marker {
+    width: 12px;
+    flex-shrink: 0;
+    color: var(--yellow);
+}
+
+.disasm-addr {
+    color: var(--overlay1);
+    width: 40px;
+    flex-shrink: 0;
+}
+
+.disasm-line.current .disasm-addr {
+    color: var(--peach);
+}
+
+.disasm-opcode {
+    color: var(--sapphire);
+    width: 60px;
+    flex-shrink: 0;
+}
+
+.disasm-line.current .disasm-opcode {
+    color: var(--yellow);
+}
+
+.disasm-operand {
+    color: var(--text);
+}
+
+.disasm-line.current .disasm-operand {
+    color: var(--yellow);
+}
+
+.disasm-instr {
+    color: var(--text);
+}
+
+.disasm-line.current .disasm-instr {
+    color: var(--yellow);
+}
+
+/* Center column — stacked VM state + eval stack + output */
+.panel-center {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+/* VM State panel */
+.panel-vm-state {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--surface1);
+}
+
+.state-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.state-table td {
+    padding: 2px 4px;
+}
+
+.state-name {
+    color: var(--overlay2);
+    width: 30px;
+}
+
+.state-val {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.state-table tr.changed .state-val {
+    color: var(--green);
+    font-weight: 700;
+}
+
+.state-table tr.changed .state-name {
+    color: var(--green);
+}
+
+.state-table tr.trap .state-val {
+    color: var(--red);
+    font-weight: 700;
+}
+
+.state-table tr.trap .state-name {
+    color: var(--red);
+}
+
+/* Eval stack panel */
+.panel-eval-stack {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--surface1);
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.stack-view {
+    font-size: 13px;
+}
+
+.stack-view .empty {
+    color: var(--overlay0);
+    font-style: italic;
+}
+
+.stack-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.stack-table td {
+    padding: 1px 4px;
+}
+
+.stack-label {
+    color: var(--yellow);
+    width: 30px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.stack-val {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    width: 60px;
+}
+
+.stack-dec {
+    color: var(--overlay1);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    font-size: 12px;
+}
+
+/* Output panel */
+.panel-output {
+    flex: 1;
+    min-height: 60px;
+    overflow-y: auto;
+}
+
+.output-text {
+    font-size: 13px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--subtext1);
+    background: var(--crust);
+    padding: 8px;
+    border-radius: 4px;
+    max-height: 100%;
+    overflow-y: auto;
+}
+
+/* COR24 host drill-down panel (right, collapsible) */
+.panel-host {
+    width: 320px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--surface1);
+    background: var(--mantle);
+    overflow-y: auto;
+}
+
+.panel-host h3 {
+    color: var(--peach);
+}
+
+.host-regs {
+    margin-bottom: 12px;
+}
+
+.host-disasm {
+    font-size: 13px;
+    line-height: 1.5;
+    border-top: 1px solid var(--surface1);
+    padding-top: 8px;
+}
+
+/* Register table (used in host panel) */
 .reg-table {
     width: 100%;
     border-collapse: collapse;
@@ -124,21 +366,6 @@
     font-weight: 700;
 }
 
-/* Output panel */
-.panel-output {
-    flex: 1;
-    min-width: 0;
-}
-
-.output-text {
-    font-size: 13px;
-    line-height: 1.4;
-    white-space: pre-wrap;
-    word-break: break-all;
-    color: var(--subtext1);
-    background: var(--crust);
-    padding: 8px;
-    border-radius: 4px;
-    max-height: 100%;
-    overflow-y: auto;
+.reg-table tr.changed .reg-name {
+    color: var(--green);
 }
