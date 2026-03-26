@@ -91,6 +91,56 @@
     margin-left: 12px;
 }
 
+.instr-count {
+    font-size: 12px;
+    color: var(--overlay1);
+    margin-left: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Memory region map bar */
+.memory-map {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 16px;
+    border-bottom: 1px solid var(--surface1);
+    flex-shrink: 0;
+}
+
+.memory-map-label {
+    font-size: 11px;
+    color: var(--overlay1);
+    flex-shrink: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.region-bar {
+    display: flex;
+    height: 16px;
+    border-radius: 3px;
+    overflow: hidden;
+    font-size: 10px;
+    flex: 1;
+}
+
+.region-bar .region {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--crust);
+    font-weight: 700;
+    min-width: 2px;
+    transition: width 0.3s;
+}
+
+.region-bar .region-code { background: var(--blue); }
+.region-bar .region-estack { background: var(--green); }
+.region-bar .region-cstack { background: var(--peach); }
+.region-bar .region-globals { background: var(--mauve); }
+.region-bar .region-heap { background: var(--yellow); }
+
 /* Main panels — flexible columns */
 .panels {
     display: flex;
@@ -256,6 +306,16 @@
     overflow-y: auto;
 }
 
+.stack-table tr.changed .stack-val,
+.stack-table tr.changed .stack-dec {
+    color: var(--green);
+    font-weight: 700;
+}
+
+.stack-table tr.changed .stack-label {
+    color: var(--green);
+}
+
 .stack-view {
     font-size: 13px;
 }
@@ -293,6 +353,71 @@
     font-variant-numeric: tabular-nums;
     text-align: right;
     font-size: 12px;
+}
+
+/* Call frame panel */
+.panel-call-frames {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--surface1);
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 8px 12px;
+}
+
+.panel-call-frames h3 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--blue);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.frames-view {
+    font-size: 13px;
+}
+
+.frames-view .empty {
+    color: var(--overlay0);
+    font-style: italic;
+}
+
+.frame-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.frame-table td {
+    padding: 1px 4px;
+    font-variant-numeric: tabular-nums;
+}
+
+.frame-header td {
+    color: var(--overlay1);
+    font-weight: 600;
+    font-size: 11px;
+    border-bottom: 1px solid var(--surface1);
+    padding-bottom: 2px;
+}
+
+.frame-idx {
+    color: var(--overlay1);
+    width: 16px;
+}
+
+.frame-val {
+    color: var(--text);
+    text-align: right;
+}
+
+.frame-current .frame-val {
+    color: var(--yellow);
+    font-weight: 700;
+}
+
+.frame-current .frame-idx {
+    color: var(--yellow);
 }
 
 /* Output panel */

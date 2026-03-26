@@ -93,7 +93,28 @@ struct PcodeInstr {
     size: u32,
 }
 
+/// A decoded call frame from the call stack.
+struct CallFrame {
+    /// Return p-code PC.
+    return_pc: u32,
+    /// Dynamic link (caller's fp_vm).
+    dynamic_link: u32,
+    /// Static link (for lexical scoping).
+    static_link: u32,
+    /// Saved eval stack pointer at call time.
+    saved_esp: u32,
+}
+
+/// A named memory region for the region map.
+struct MemRegion {
+    name: &'static str,
+    css_class: &'static str,
+    start: u32,
+    size: u32,
+}
+
 /// Snapshot of the p-code VM's semantic state (read from emulator memory).
+#[derive(Clone)]
 struct PcodeState {
     pc: u32,
     esp: u32,
@@ -148,6 +169,12 @@ pub struct Debugger {
     vm_loop_addr: u32,
     /// Previous p-code PC for change detection.
     prev_pcode_pc: u32,
+    /// Previous eval stack for change highlighting.
+    prev_eval_stack: Vec<u32>,
+    /// Previous VM state for change highlighting.
+    prev_pcode_state: Option<PcodeState>,
+    /// Total COR24 instructions executed.
+    instruction_count: u64,
     /// Show COR24 host drill-down panel.
     show_host: bool,
 }
@@ -191,6 +218,9 @@ impl Debugger {
         self.prev_regs = [0; 8];
         self.prev_pc = 0;
         self.prev_pcode_pc = 0;
+        self.prev_eval_stack.clear();
+        self.prev_pcode_state = None;
+        self.instruction_count = 0;
 
         // Start paused — debugger mode.
         self.running = false;
@@ -325,6 +355,129 @@ impl Debugger {
         result
     }
 
+    /// Read call frames by walking the dynamic link chain from fp_vm.
+    /// Each frame header is 12 bytes: return_pc(3), dynamic_link(3), static_link(3), saved_esp(3).
+    /// fp_vm points to first local; frame header is at fp_vm - 12.
+    fn read_call_frames(&self, pstate: &PcodeState) -> Vec<CallFrame> {
+        let mut frames = Vec::new();
+        let mut fp = pstate.fp_vm;
+        while fp >= self.call_stack_base + 12 {
+            let header = fp - 12;
+            if header < self.call_stack_base {
+                break;
+            }
+            frames.push(CallFrame {
+                return_pc: self.emulator.read_word(header),
+                dynamic_link: self.emulator.read_word(header + 3),
+                static_link: self.emulator.read_word(header + 6),
+                saved_esp: self.emulator.read_word(header + 9),
+            });
+            let prev_fp = self.emulator.read_word(header + 3);
+            if prev_fp == 0 || prev_fp >= fp {
+                break; // End of chain or invalid link.
+            }
+            fp = prev_fp;
+        }
+        frames.reverse(); // Oldest frame first.
+        frames
+    }
+
+    /// Compute memory regions for the visualization bar.
+    fn memory_regions(&self, pstate: &PcodeState) -> Vec<MemRegion> {
+        if pstate.code_base == 0 {
+            return Vec::new();
+        }
+        let code_size = self.eval_stack_base.saturating_sub(pstate.code_base);
+        let eval_used = pstate.esp.saturating_sub(self.eval_stack_base);
+        let eval_cap = self.call_stack_base.saturating_sub(self.eval_stack_base);
+        let call_used = pstate.csp.saturating_sub(self.call_stack_base);
+        // Globals and heap are after call stack in the memory map.
+        let globals_size = if pstate.gp > 0 { 24 } else { 0 }; // 8 words = 24 bytes
+        let heap_used = pstate.hp.saturating_sub(pstate.gp);
+
+        vec![
+            MemRegion {
+                name: "Code",
+                css_class: "region-code",
+                start: pstate.code_base,
+                size: code_size,
+            },
+            MemRegion {
+                name: "EStack",
+                css_class: "region-estack",
+                start: self.eval_stack_base,
+                size: eval_used.max(eval_cap),
+            },
+            MemRegion {
+                name: "CStack",
+                css_class: "region-cstack",
+                start: self.call_stack_base,
+                size: call_used.max(1),
+            },
+            MemRegion {
+                name: "Globals",
+                css_class: "region-globals",
+                start: pstate.gp,
+                size: globals_size,
+            },
+            MemRegion {
+                name: "Heap",
+                css_class: "region-heap",
+                start: pstate.hp.saturating_sub(heap_used),
+                size: heap_used.max(1),
+            },
+        ]
+    }
+
+    fn view_vm_state_table(&self, pstate: &PcodeState) -> Html {
+        let prev = self.prev_pcode_state.as_ref();
+        let changed = |cur: u32, get_prev: fn(&PcodeState) -> u32| -> &str {
+            match prev {
+                Some(p) if get_prev(p) != cur => "changed",
+                _ => "",
+            }
+        };
+
+        html! {
+            <table class="state-table">
+                <tr class={changed(pstate.pc, |p| p.pc)}>
+                    <td class="state-name">{"PC"}</td>
+                    <td class="state-val">{ format!("{:04X}", pstate.pc) }</td>
+                </tr>
+                <tr class={changed(pstate.esp, |p| p.esp)}>
+                    <td class="state-name">{"ESP"}</td>
+                    <td class="state-val">{ format!("{:06X}", pstate.esp) }</td>
+                </tr>
+                <tr class={changed(pstate.csp, |p| p.csp)}>
+                    <td class="state-name">{"CSP"}</td>
+                    <td class="state-val">{ format!("{:06X}", pstate.csp) }</td>
+                </tr>
+                <tr class={changed(pstate.fp_vm, |p| p.fp_vm)}>
+                    <td class="state-name">{"FP"}</td>
+                    <td class="state-val">{ format!("{:06X}", pstate.fp_vm) }</td>
+                </tr>
+                <tr class={changed(pstate.gp, |p| p.gp)}>
+                    <td class="state-name">{"GP"}</td>
+                    <td class="state-val">{ format!("{:06X}", pstate.gp) }</td>
+                </tr>
+                <tr class={changed(pstate.hp, |p| p.hp)}>
+                    <td class="state-name">{"HP"}</td>
+                    <td class="state-val">{ format!("{:06X}", pstate.hp) }</td>
+                </tr>
+                { if pstate.status == 2 {
+                    html! {
+                        <tr class="trap">
+                            <td class="state-name">{"TRAP"}</td>
+                            <td class="state-val">{ format!("{}", pstate.trap_code) }</td>
+                        </tr>
+                    }
+                } else {
+                    html! {}
+                }}
+            </table>
+        }
+    }
+
     fn collect_uart(&mut self) {
         let uart = self.emulator.get_uart_output();
         if !uart.is_empty() {
@@ -337,7 +490,10 @@ impl Debugger {
         let snap = self.emulator.snapshot();
         self.prev_regs = snap.regs;
         self.prev_pc = snap.pc;
-        self.prev_pcode_pc = self.read_pcode_state().pc;
+        let pstate = self.read_pcode_state();
+        self.prev_pcode_pc = pstate.pc;
+        self.prev_eval_stack = self.read_eval_stack(&pstate);
+        self.prev_pcode_state = Some(pstate);
     }
 
     fn check_halted(&mut self, reason: StopReason) {
@@ -374,6 +530,9 @@ impl Component for Debugger {
             code_seg_addr: 0,
             vm_loop_addr: 0,
             prev_pcode_pc: 0,
+            prev_eval_stack: Vec::new(),
+            prev_pcode_state: None,
+            instruction_count: 0,
             show_host: false,
         }
     }
@@ -391,6 +550,7 @@ impl Component for Debugger {
 
                 self.save_prev_state();
                 let result = self.emulator.run_batch(BATCH_SIZE);
+                self.instruction_count += result.instructions_run;
                 self.collect_uart();
                 self.check_halted(result.reason);
 
@@ -415,8 +575,9 @@ impl Component for Debugger {
                 if pstate.code_base == 0 {
                     // VM not yet initialized — run COR24 init until host PC
                     // reaches vm_loop (the top of the fetch-decode cycle).
-                    for _ in 0..100_000 {
+                    for _ in 0..100_000u32 {
                         let result = self.emulator.step();
+                        self.instruction_count += result.instructions_run;
                         self.collect_uart();
                         if matches!(result.reason, StopReason::Halted) {
                             self.halted = true;
@@ -440,6 +601,7 @@ impl Component for Debugger {
                     let mut i = 0u32;
                     loop {
                         let result = self.emulator.step();
+                        self.instruction_count += result.instructions_run;
                         self.collect_uart();
                         i += 1;
                         if matches!(result.reason, StopReason::Halted) {
@@ -466,6 +628,7 @@ impl Component for Debugger {
                 }
                 self.save_prev_state();
                 let result = self.emulator.step();
+                self.instruction_count += result.instructions_run;
                 self.collect_uart();
                 self.check_halted(result.reason);
                 true
@@ -506,6 +669,12 @@ impl Component for Debugger {
         } else {
             Vec::new()
         };
+        let call_frames = if vm_initialized {
+            self.read_call_frames(&pstate)
+        } else {
+            Vec::new()
+        };
+        let regions = self.memory_regions(&pstate);
 
         let vm_status = if !vm_initialized {
             "INIT"
@@ -546,7 +715,34 @@ impl Component for Debugger {
                     <span class="pc-display host-pc">
                         { format!("Host PC: {:06X}", snap.pc) }
                     </span>
+                    <span class="instr-count">
+                        { format!("Instrs: {}", self.instruction_count) }
+                    </span>
                 </div>
+
+                // Memory region map bar
+                { if !regions.is_empty() {
+                    let region_total: u32 = regions.iter().map(|r| r.size).sum::<u32>().max(1);
+                    html! {
+                        <div class="memory-map">
+                            <span class="memory-map-label">{"Memory"}</span>
+                            <div class="region-bar">
+                                { for regions.iter().map(|r| {
+                                    let pct = (r.size as f64 / region_total as f64 * 100.0).max(2.0);
+                                    let style = format!("width: {}%", pct);
+                                    html! {
+                                        <div class={classes!("region", r.css_class)} style={style}
+                                             title={format!("{}: {:06X}-{:06X} ({} bytes)", r.name, r.start, r.start + r.size, r.size)}>
+                                            { if pct > 8.0 { r.name } else { "" } }
+                                        </div>
+                                    }
+                                })}
+                            </div>
+                        </div>
+                    }
+                } else {
+                    html! {}
+                }}
 
                 // Main panels area — 3-column layout
                 <div class="panels">
@@ -590,65 +786,75 @@ impl Component for Debugger {
                         </div>
                     </div>
 
-                    // Center: VM state + eval stack + output
+                    // Center: VM state + eval stack + call frames + output
                     <div class="panel-center">
                         // VM state
                         <div class="panel panel-vm-state">
                             <h3>{"VM State"}</h3>
-                            <table class="state-table">
-                                <tr class={if pstate.pc != self.prev_pcode_pc { "changed" } else { "" }}>
-                                    <td class="state-name">{"PC"}</td>
-                                    <td class="state-val">{ format!("{:04X}", pstate.pc) }</td>
-                                </tr>
-                                <tr>
-                                    <td class="state-name">{"ESP"}</td>
-                                    <td class="state-val">{ format!("{:06X}", pstate.esp) }</td>
-                                </tr>
-                                <tr>
-                                    <td class="state-name">{"CSP"}</td>
-                                    <td class="state-val">{ format!("{:06X}", pstate.csp) }</td>
-                                </tr>
-                                <tr>
-                                    <td class="state-name">{"FP"}</td>
-                                    <td class="state-val">{ format!("{:06X}", pstate.fp_vm) }</td>
-                                </tr>
-                                <tr>
-                                    <td class="state-name">{"GP"}</td>
-                                    <td class="state-val">{ format!("{:06X}", pstate.gp) }</td>
-                                </tr>
-                                <tr>
-                                    <td class="state-name">{"HP"}</td>
-                                    <td class="state-val">{ format!("{:06X}", pstate.hp) }</td>
-                                </tr>
-                                { if pstate.status == 2 {
-                                    html! {
-                                        <tr class="trap">
-                                            <td class="state-name">{"TRAP"}</td>
-                                            <td class="state-val">{ format!("{}", pstate.trap_code) }</td>
-                                        </tr>
-                                    }
-                                } else {
-                                    html! {}
-                                }}
-                            </table>
+                            { self.view_vm_state_table(&pstate) }
                         </div>
 
-                        // Eval stack
+                        // Eval stack with change highlighting
                         <div class="panel panel-eval-stack">
                             <h3>{ format!("Eval Stack ({})", eval_stack.len()) }</h3>
                             <div class="stack-view">
                                 { if eval_stack.is_empty() {
                                     html! { <span class="empty">{"(empty)"}</span> }
                                 } else {
+                                    let prev = &self.prev_eval_stack;
+                                    let prev_len = prev.len();
+                                    let cur_len = eval_stack.len();
                                     html! {
                                         <table class="stack-table">
                                             { for eval_stack.iter().rev().enumerate().map(|(i, &val)| {
+                                                let depth_from_bottom = cur_len - 1 - i;
+                                                let changed = if depth_from_bottom >= prev_len {
+                                                    true // new entry
+                                                } else {
+                                                    prev[depth_from_bottom] != val
+                                                };
                                                 let label = if i == 0 { "TOS" } else { "" };
+                                                let row_class = if changed { "changed" } else { "" };
                                                 html! {
-                                                    <tr>
+                                                    <tr class={row_class}>
                                                         <td class="stack-label">{ label }</td>
                                                         <td class="stack-val">{ format!("{:06X}", val) }</td>
                                                         <td class="stack-dec">{ format!("{}", val as i32) }</td>
+                                                    </tr>
+                                                }
+                                            })}
+                                        </table>
+                                    }
+                                }}
+                            </div>
+                        </div>
+
+                        // Call frames
+                        <div class="panel panel-call-frames">
+                            <h3>{ format!("Call Stack ({})", call_frames.len()) }</h3>
+                            <div class="frames-view">
+                                { if call_frames.is_empty() {
+                                    html! { <span class="empty">{"(no frames)"}</span> }
+                                } else {
+                                    html! {
+                                        <table class="frame-table">
+                                            <tr class="frame-header">
+                                                <td>{"#"}</td>
+                                                <td>{"RetPC"}</td>
+                                                <td>{"FP"}</td>
+                                                <td>{"SLink"}</td>
+                                                <td>{"ESP"}</td>
+                                            </tr>
+                                            { for call_frames.iter().rev().enumerate().map(|(i, f)| {
+                                                let is_current = i == 0;
+                                                let row_class = if is_current { "frame-current" } else { "" };
+                                                html! {
+                                                    <tr class={row_class}>
+                                                        <td class="frame-idx">{ format!("{}", call_frames.len() - i - 1) }</td>
+                                                        <td class="frame-val">{ format!("{:04X}", f.return_pc) }</td>
+                                                        <td class="frame-val">{ format!("{:06X}", f.dynamic_link) }</td>
+                                                        <td class="frame-val">{ format!("{:06X}", f.static_link) }</td>
+                                                        <td class="frame-val">{ format!("{:06X}", f.saved_esp) }</td>
                                                     </tr>
                                                 }
                                             })}

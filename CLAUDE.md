@@ -27,10 +27,14 @@ Commit your code changes with git.
 ```bash
 agentrail complete --summary "what you accomplished" \
   --reward 1 \
-  --actions "tools and approach used"
+  --actions "tools and approach used" \
+  --next-slug "next-step-slug" \
+  --next-prompt "what the next step should do" \
+  --next-task-type "task-type"
 ```
 If the step failed: `--reward -1 --failure-mode "what went wrong"`
-If the saga is finished: add `--done`
+If the saga is finished: use `--done` instead of `--next-*` flags
+Always define the next step unless the saga is done — otherwise the next session has no step to begin.
 
 ### 6. STOP (after complete, DO NOT continue working)
 Do NOT make any further code changes after running agentrail complete.

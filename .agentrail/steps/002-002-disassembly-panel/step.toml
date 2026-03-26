@@ -1,8 +1,9 @@
 number = 2
 slug = "002-disassembly-panel"
-status = "in-progress"
+status = "completed"
 description = "Add COR24 disassembly panel and improve the debugger layout. Since p-code VM ..."
 role = "production"
 context_files = []
 created_at = "2026-03-25T20:47:39"
+completed_at = "2026-03-25T21:06:44"
 task_type = "yew-component"
