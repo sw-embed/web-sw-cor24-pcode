@@ -1,0 +1,5 @@
+[build]
+dist = "dist"
+
+[serve]
+port = 9247

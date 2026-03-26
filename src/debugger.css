@@ -1,0 +1,144 @@
+/* P-Code VM Debugger panel styles */
+
+.debugger {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* Control bar */
+.control-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--surface1);
+    background: var(--mantle);
+    flex-shrink: 0;
+}
+
+.btn {
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 4px 12px;
+    border: 1px solid var(--surface2);
+    border-radius: 4px;
+    cursor: pointer;
+    background: var(--surface0);
+    color: var(--text);
+    transition: background 0.15s;
+}
+
+.btn:hover:not(:disabled) {
+    background: var(--surface1);
+}
+
+.btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.btn-reset {
+    color: var(--red);
+    border-color: var(--red);
+}
+
+.btn-step {
+    color: var(--blue);
+    border-color: var(--blue);
+}
+
+.btn-run {
+    color: var(--green);
+    border-color: var(--green);
+}
+
+.status {
+    font-size: 13px;
+    font-weight: 600;
+    margin-left: 8px;
+    color: var(--yellow);
+}
+
+.pc-display {
+    font-size: 13px;
+    color: var(--overlay2);
+    margin-left: auto;
+}
+
+/* Main panels */
+.panels {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+}
+
+.panel {
+    padding: 8px 12px;
+    overflow-y: auto;
+}
+
+.panel h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--blue);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Registers panel */
+.panel-registers {
+    width: 180px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--surface1);
+    background: var(--mantle);
+}
+
+.reg-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.reg-table td {
+    padding: 2px 4px;
+}
+
+.reg-name {
+    color: var(--overlay2);
+    width: 30px;
+}
+
+.reg-val {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.reg-table tr.changed .reg-val {
+    color: var(--green);
+    font-weight: 700;
+}
+
+/* Output panel */
+.panel-output {
+    flex: 1;
+    min-width: 0;
+}
+
+.output-text {
+    font-size: 13px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--subtext1);
+    background: var(--crust);
+    padding: 8px;
+    border-radius: 4px;
+    max-height: 100%;
+    overflow-y: auto;
+}

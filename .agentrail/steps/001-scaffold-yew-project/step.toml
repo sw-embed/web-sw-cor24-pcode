@@ -1,6 +1,6 @@
 number = 1
 slug = "scaffold-yew-project"
-status = "pending"
+status = "in-progress"
 description = "Scaffold the Yew/Rust/WASM project. Create Cargo.toml (edition 2024, Yew 0.21..."
 role = "legacy"
 context_files = []
