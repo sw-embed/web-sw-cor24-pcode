@@ -113,6 +113,36 @@ struct MemRegion {
     size: u32,
 }
 
+/// Selectable memory region for hex viewer.
+#[derive(Clone, Copy, PartialEq)]
+enum HexRegion {
+    Code,
+    EvalStack,
+    CallStack,
+    Globals,
+    Heap,
+}
+
+impl HexRegion {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Code => "Code",
+            Self::EvalStack => "Eval Stack",
+            Self::CallStack => "Call Stack",
+            Self::Globals => "Globals",
+            Self::Heap => "Heap",
+        }
+    }
+
+    const ALL: [HexRegion; 5] = [
+        Self::Code,
+        Self::EvalStack,
+        Self::CallStack,
+        Self::Globals,
+        Self::Heap,
+    ];
+}
+
 /// Snapshot of the p-code VM's semantic state (read from emulator memory).
 #[derive(Clone)]
 struct PcodeState {
@@ -137,12 +167,20 @@ pub enum Msg {
     Reset,
     /// Step one p-code instruction (run COR24 until VM pc changes).
     StepPcode,
+    /// Step over: run until call depth returns to current level.
+    StepOver,
+    /// Step out: run until call depth decreases by one.
+    StepOut,
     /// Step one COR24 host instruction.
     StepHost,
     /// Toggle run/pause.
     PauseResume,
     /// Toggle COR24 drill-down panel visibility.
     ToggleHost,
+    /// Select memory region in hex viewer.
+    SelectHexRegion(String),
+    /// Toggle hex viewer panel visibility.
+    ToggleHexViewer,
 }
 
 pub struct Debugger {
@@ -177,6 +215,10 @@ pub struct Debugger {
     instruction_count: u64,
     /// Show COR24 host drill-down panel.
     show_host: bool,
+    /// Show hex memory viewer panel.
+    show_hex_viewer: bool,
+    /// Currently selected memory region for hex viewer.
+    hex_region: HexRegion,
 }
 
 impl Debugger {
@@ -429,6 +471,98 @@ impl Debugger {
         ]
     }
 
+    /// Get the address range for a hex region.
+    fn hex_region_range(&self, region: HexRegion, pstate: &PcodeState) -> (u32, u32) {
+        match region {
+            HexRegion::Code => {
+                let start = pstate.code_base;
+                let end = self.eval_stack_base;
+                (start, end)
+            }
+            HexRegion::EvalStack => {
+                let start = self.eval_stack_base;
+                let end = pstate.esp;
+                (start, end)
+            }
+            HexRegion::CallStack => {
+                let start = self.call_stack_base;
+                let end = pstate.csp;
+                (start, end)
+            }
+            HexRegion::Globals => {
+                let start = pstate.gp;
+                let end = pstate.gp + 24; // 8 words * 3 bytes
+                (start, end)
+            }
+            HexRegion::Heap => {
+                let start = pstate.gp;
+                let end = pstate.hp;
+                (start, end)
+            }
+        }
+    }
+
+    /// Check if an address should be highlighted in the hex viewer.
+    fn hex_highlight_addr(&self, addr: u32, region: HexRegion, pstate: &PcodeState) -> bool {
+        match region {
+            HexRegion::Code => {
+                let abs_pc = pstate.code_base + pstate.pc;
+                addr >= abs_pc && addr < abs_pc + 4 // max instruction size
+            }
+            HexRegion::EvalStack => {
+                // Highlight top of stack (last 3 bytes)
+                pstate.esp > 3 && addr >= pstate.esp - 3 && addr < pstate.esp
+            }
+            HexRegion::CallStack => {
+                // Highlight current frame pointer area
+                pstate.fp_vm >= 12 && addr >= pstate.fp_vm - 12 && addr < pstate.fp_vm
+            }
+            HexRegion::Globals | HexRegion::Heap => false,
+        }
+    }
+
+    /// Count current call depth (number of frames).
+    fn call_depth(&self, pstate: &PcodeState) -> usize {
+        self.read_call_frames(pstate).len()
+    }
+
+    /// Run p-code instructions until a depth condition is met.
+    /// Returns when depth_check(current_depth) is true or on halt/timeout.
+    fn run_until_depth<F>(&mut self, depth_check: F)
+    where
+        F: Fn(usize) -> bool,
+    {
+        for _ in 0..500_000u32 {
+            // Step one p-code instruction
+            let mut i = 0u32;
+            loop {
+                let result = self.emulator.step();
+                self.instruction_count += result.instructions_run;
+                self.collect_uart();
+                i += 1;
+                if matches!(result.reason, StopReason::Halted) {
+                    self.halted = true;
+                    self.running = false;
+                    return;
+                }
+                if self.read_pcode_state().status != 0 {
+                    return;
+                }
+                if i > 1 && self.emulator.snapshot().pc == self.vm_loop_addr {
+                    break;
+                }
+                if i >= 50_000 {
+                    return;
+                }
+            }
+            let pstate = self.read_pcode_state();
+            let depth = self.call_depth(&pstate);
+            if depth_check(depth) {
+                return;
+            }
+        }
+    }
+
     fn view_vm_state_table(&self, pstate: &PcodeState) -> Html {
         let prev = self.prev_pcode_state.as_ref();
         let changed = |cur: u32, get_prev: fn(&PcodeState) -> u32| -> &str {
@@ -534,6 +668,8 @@ impl Component for Debugger {
             prev_pcode_state: None,
             instruction_count: 0,
             show_host: false,
+            show_hex_viewer: false,
+            hex_region: HexRegion::Code,
         }
     }
 
@@ -647,8 +783,81 @@ impl Component for Debugger {
                 }
                 true
             }
+            Msg::StepOver => {
+                if self.halted {
+                    return false;
+                }
+                self.save_prev_state();
+                let pstate = self.read_pcode_state();
+                if pstate.code_base == 0 {
+                    // Not initialized yet — just do a regular step.
+                    ctx.link().send_message(Msg::StepPcode);
+                    return false;
+                }
+                let target_depth = self.call_depth(&pstate);
+                // First, step one p-code instruction.
+                let mut i = 0u32;
+                loop {
+                    let result = self.emulator.step();
+                    self.instruction_count += result.instructions_run;
+                    self.collect_uart();
+                    i += 1;
+                    if matches!(result.reason, StopReason::Halted) {
+                        self.halted = true;
+                        self.running = false;
+                        return true;
+                    }
+                    if self.read_pcode_state().status != 0 {
+                        return true;
+                    }
+                    if i > 1 && self.emulator.snapshot().pc == self.vm_loop_addr {
+                        break;
+                    }
+                    if i >= 50_000 {
+                        return true;
+                    }
+                }
+                // If we entered a call, keep running until depth <= target.
+                let new_depth = self.call_depth(&self.read_pcode_state());
+                if new_depth > target_depth {
+                    self.run_until_depth(|d| d <= target_depth);
+                }
+                true
+            }
+            Msg::StepOut => {
+                if self.halted {
+                    return false;
+                }
+                self.save_prev_state();
+                let pstate = self.read_pcode_state();
+                if pstate.code_base == 0 {
+                    return false;
+                }
+                let current_depth = self.call_depth(&pstate);
+                if current_depth == 0 {
+                    return false;
+                }
+                let target_depth = current_depth - 1;
+                self.run_until_depth(|d| d <= target_depth);
+                true
+            }
             Msg::ToggleHost => {
                 self.show_host = !self.show_host;
+                true
+            }
+            Msg::SelectHexRegion(val) => {
+                self.hex_region = match val.as_str() {
+                    "code" => HexRegion::Code,
+                    "estack" => HexRegion::EvalStack,
+                    "cstack" => HexRegion::CallStack,
+                    "globals" => HexRegion::Globals,
+                    "heap" => HexRegion::Heap,
+                    _ => HexRegion::Code,
+                };
+                true
+            }
+            Msg::ToggleHexViewer => {
+                self.show_hex_viewer = !self.show_hex_viewer;
                 true
             }
         }
@@ -696,6 +905,12 @@ impl Component for Debugger {
                     <button onclick={link.callback(|_| Msg::StepPcode)}
                             class="btn btn-step"
                             disabled={self.halted}>{"Step P-Code"}</button>
+                    <button onclick={link.callback(|_| Msg::StepOver)}
+                            class="btn btn-step"
+                            disabled={self.halted}>{"Step Over"}</button>
+                    <button onclick={link.callback(|_| Msg::StepOut)}
+                            class="btn btn-step"
+                            disabled={self.halted}>{"Step Out"}</button>
                     <button onclick={link.callback(|_| Msg::StepHost)}
                             class="btn btn-step-host"
                             disabled={self.halted}>{"Step Host"}</button>
@@ -703,6 +918,10 @@ impl Component for Debugger {
                             class="btn btn-run"
                             disabled={self.halted}>
                         { if self.running { "Pause" } else { "Run" } }
+                    </button>
+                    <button onclick={link.callback(|_| Msg::ToggleHexViewer)}
+                            class={if self.show_hex_viewer { "btn btn-toggle active" } else { "btn btn-toggle" }}>
+                        {"Memory"}
                     </button>
                     <button onclick={link.callback(|_| Msg::ToggleHost)}
                             class={if self.show_host { "btn btn-toggle active" } else { "btn btn-toggle" }}>
@@ -870,6 +1089,96 @@ impl Component for Debugger {
                             <pre class="output-text">{ &self.output }</pre>
                         </div>
                     </div>
+
+                    // Hex memory viewer (collapsible)
+                    { if self.show_hex_viewer && vm_initialized {
+                        let hex_region = self.hex_region;
+                        let (start, end) = self.hex_region_range(hex_region, &pstate);
+                        let size = end.saturating_sub(start);
+                        let max_bytes = 512u32.min(size);
+                        html! {
+                            <div class="panel panel-hex">
+                                <div class="hex-header">
+                                    <h3>{"Memory"}</h3>
+                                    <select class="hex-select"
+                                            onchange={link.callback(|e: Event| {
+                                                let target: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                                                Msg::SelectHexRegion(target.value())
+                                            })}>
+                                        { for HexRegion::ALL.iter().map(|&r| {
+                                            let val = match r {
+                                                HexRegion::Code => "code",
+                                                HexRegion::EvalStack => "estack",
+                                                HexRegion::CallStack => "cstack",
+                                                HexRegion::Globals => "globals",
+                                                HexRegion::Heap => "heap",
+                                            };
+                                            html! {
+                                                <option value={val} selected={r == hex_region}>
+                                                    { r.label() }
+                                                </option>
+                                            }
+                                        })}
+                                    </select>
+                                    <span class="hex-info">
+                                        { format!("{:06X}-{:06X} ({} bytes)", start, end, size) }
+                                    </span>
+                                </div>
+                                <div class="hex-dump">
+                                    { if size == 0 {
+                                        html! { <span class="empty">{"(empty)"}</span> }
+                                    } else {
+                                        html! {
+                                            <table class="hex-table">
+                                                <tr class="hex-header-row">
+                                                    <td class="hex-addr">{"Addr"}</td>
+                                                    { for (0..16u8).map(|i| {
+                                                        html! { <td class="hex-col-hdr">{ format!("{:X}", i) }</td> }
+                                                    })}
+                                                    <td class="hex-ascii-hdr">{"ASCII"}</td>
+                                                </tr>
+                                                { for (0..max_bytes).step_by(16).map(|row_off| {
+                                                    let row_addr = start + row_off;
+                                                    let row_end = (row_addr + 16).min(start + max_bytes);
+                                                    let count = (row_end - row_addr) as usize;
+                                                    let mut bytes = Vec::with_capacity(count);
+                                                    for i in 0..count as u32 {
+                                                        bytes.push(self.emulator.read_byte(row_addr + i));
+                                                    }
+                                                    html! {
+                                                        <tr>
+                                                            <td class="hex-addr">{ format!("{:06X}", row_addr) }</td>
+                                                            { for (0..16usize).map(|i| {
+                                                                if i < count {
+                                                                    let addr = row_addr + i as u32;
+                                                                    let hl = self.hex_highlight_addr(addr, hex_region, &pstate);
+                                                                    let cls = if hl { "hex-byte hex-hl" } else { "hex-byte" };
+                                                                    html! { <td class={cls}>{ format!("{:02X}", bytes[i]) }</td> }
+                                                                } else {
+                                                                    html! { <td class="hex-byte hex-pad">{"  "}</td> }
+                                                                }
+                                                            })}
+                                                            <td class="hex-ascii">
+                                                                { bytes.iter().map(|&b| {
+                                                                    if (0x20..=0x7E).contains(&b) {
+                                                                        b as char
+                                                                    } else {
+                                                                        '.'
+                                                                    }
+                                                                }).collect::<String>() }
+                                                            </td>
+                                                        </tr>
+                                                    }
+                                                })}
+                                            </table>
+                                        }
+                                    }}
+                                </div>
+                            </div>
+                        }
+                    } else {
+                        html! {}
+                    }}
 
                     // Right: COR24 host drill-down (collapsible)
                     { if self.show_host {
