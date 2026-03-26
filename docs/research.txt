@@ -1,0 +1,2258 @@
+
+
+
+
+How would I implement Pascal from scratch for a custom 24-bit ISA?  I have a working C compiler and Assembler (and emulator and FPGA hardware).  Was Pascal bootstapped in assembler or C and then written in Pascal?  Are there open source implementations with liberal licenses (BSD, MIT) that I can look at?  I do not want to port from a 16-bit or 32-bit system.  I prefer to write-from-scratch, clean-room implementation, possibly using already-written Pascal souce examples for testing my compiler.  I also want a debugger.  How should I start?  
+
+
+Thought for 36s
+Given your constraints, I would not start by trying to build a self-hosting Pascal compiler immediately.
+
+You already have the right base:
+
+working assembler
+
+working C compiler
+
+emulator + FPGA target
+
+desire for a clean-room implementation
+
+debugger requirement from day one
+
+That points to a practical architecture:
+
+Recommended architecture
+Build Pascal in three stages:
+
+Pascal front end in C
+
+lexer
+
+parser
+
+AST
+
+symbol tables
+
+type checker
+
+simple error recovery
+
+Portable intermediate form
+
+either a small stack VM / p-code
+
+or a very small typed IR of your own
+
+Back ends
+
+first: interpreter for the IR/p-code on the host
+
+second: native code generator for your 24-bit ISA
+
+later: optional self-hosting compiler in Pascal
+
+That is the lowest-risk path because it lets you validate semantics before you fight register allocation, calling conventions, and codegen bugs.
+
+Historically, how Pascal was bootstrapped
+The earliest Pascal compiler was not originally bootstrapped in assembler in the way many people assume. Niklaus Wirth’s first FORTRAN-based attempt was unsuccessful; the successful implementation was done in a C-like language called Scallop and then translated by hand into Pascal for bootstrapping. Many later Pascal compilers became self-hosting. A famous exception is GNU Pascal, which was written in C. Turbo Pascal, much later, was famously written in assembly for speed and size. 
+
+So the historical pattern is roughly:
+
+prototype in another language
+
+get a working compiler
+
+rewrite or re-express the compiler in Pascal
+
+use the previous compiler to compile the new compiler
+
+That is exactly the path I would recommend for your ISA as well.
+
+What to target first: native code or p-code?
+For your situation, I would start with a Pascal-S / Pascal-P style subset and a p-code-like intermediate machine.
+
+Why:
+
+Pascal semantics are nontrivial enough already: nested procedures, static scoping, sets, records, packed/unpacked data, file types, pass-by-reference, variant records, etc.
+
+your ISA is 24-bit, which means you will be making many nonstandard representation decisions anyway
+
+a p-code interpreter gives you a correctness oracle before native codegen
+
+Historically, Pascal-P was created specifically as a compiler porting kit: Pascal source compiled to p-code for a virtual stack machine, then interpreted on each target. That was done to make Pascal portable. 
+
+For a custom ISA, that strategy is still excellent.
+
+What subset should you implement first
+Do not begin with full ISO Pascal.
+
+Begin with a clean educational subset:
+
+Phase 0: expression language
+integers only
+
+constants
+
+variables
+
+assignment
+
+arithmetic
+
+comparisons
+
+if, while
+
+begin ... end
+
+writeln-like builtin for debugging
+
+Phase 1: real Pascal block structure
+program
+
+declarations
+
+scalar types: integer, boolean, char
+
+arrays with fixed bounds
+
+records
+
+procedures/functions
+
+lexical nesting
+
+local variables
+
+pass-by-value and var parameters
+
+Phase 2: features that force runtime design
+strings or packed char arrays
+
+sets
+
+pointers
+
+heap
+
+files
+
+case statements
+
+standard procedures/functions
+
+Phase 3: optional/full language
+ISO-ish cleanup
+
+conformance tests
+
+self-hosting subset
+
+For your first compiler, avoid:
+
+packed types
+
+files
+
+variant records
+
+conformant arrays
+
+procedural parameters
+
+goto
+
+real numbers
+
+Those features create a disproportionate amount of compiler/runtime complexity.
+
+Clean-room strategy
+Your instinct is good: use existing Pascal systems for ideas and tests, not for porting.
+
+A good clean-room posture is:
+
+read language reports and public docs
+
+study high-level architecture of older Pascal compilers
+
+do not copy implementation code
+
+write your own grammar, AST, type system, runtime, and codegen
+
+use existing Pascal example programs only as black-box test inputs
+
+That gives you educational value and keeps the implementation genuinely yours.
+
+Best implementation strategy for your toolchain
+Since you already have C and assembler, I would do this:
+
+Stage A — host-side compiler in C
+Run on your current host machine.
+
+Outputs either:
+
+textual p-code / bytecode
+
+or textual assembly for your 24-bit ISA
+
+This lets you iterate quickly.
+
+Stage B — target runtime
+On your ISA:
+
+tiny startup
+
+memory map
+
+stack/heap model
+
+runtime support calls
+
+optional p-code interpreter
+
+Stage C — native backend
+Replace or complement the p-code interpreter with native code generation.
+
+Stage D — self-hosting subset
+Once the compiler is stable enough, rewrite the front end in Pascal itself and compile it with your earlier compiler.
+
+IR choice: stack machine vs register IR
+For Pascal, a stack IR is the easiest starting point.
+
+Why:
+
+expressions map naturally
+
+nested scopes can be handled without solving global register allocation early
+
+procedure calls are simpler
+
+p-code history gives you many good precedents
+
+A tiny IR might look like:
+
+LDC k load constant
+
+LD level, offset
+
+ST level, offset
+
+ADD SUB MUL DIV
+
+EQ NE LT LE GT GE
+
+JMP label
+
+JZ label
+
+CALL proc_id
+
+RET
+
+ENTER locals_size
+
+LEAVE
+
+LDI STI for indirect access
+
+IDX for array indexing
+
+FIELD offset
+
+Then later map those to your 24-bit ISA.
+
+The hardest design decisions you need early
+These are the places where Pascal compilers get real:
+
+1. Lexical nesting and static links
+Pascal’s nested procedures are one of the biggest differences from C.
+
+You need a decision for nonlocal access:
+
+static link per frame
+
+or display
+
+or closure-like environment objects
+
+For a first implementation, use static links. They are simpler and faithful to classic Pascal.
+
+Each frame should contain:
+
+return address
+
+dynamic link
+
+static link
+
+locals
+
+temporaries / spills if needed
+
+2. Data layout on a 24-bit ISA
+Decide up front:
+
+size of integer
+
+size of pointer
+
+alignment rules
+
+representation of boolean
+
+char width
+
+array bound representation
+
+set representation
+
+If your ISA is naturally 24-bit, I would strongly consider:
+
+integer = signed 24-bit
+
+pointer = 24-bit
+
+boolean = 24-bit 0/1
+
+char = 8-bit, but stored with clear load/store conventions
+
+align aggregates to 24-bit word boundaries unless you have compelling byte-density reasons
+
+Packed representations can wait.
+
+3. Calling convention
+Define this before codegen:
+
+who pushes params
+
+who cleans stack
+
+how function result is returned
+
+where static link goes
+
+which registers are caller/callee saved
+
+how large structs/records are passed
+
+For simplicity:
+
+caller pushes arguments left-to-right or right-to-left, but pick one and freeze it
+
+caller also pushes static link
+
+callee builds frame
+
+return value in a dedicated register if scalar, hidden pointer if aggregate
+
+4. Runtime model
+You need a tiny Pascal runtime for:
+
+startup
+
+bounds-check failure
+
+nil deref failure
+
+division by zero
+
+heap alloc/free if pointers are supported
+
+I/O stubs
+
+exit / halt
+
+Keep it tiny and callable from generated code.
+
+Debugger: how to design it from the start
+You said you also want a debugger. Good. Add debug support immediately, not later.
+
+I would design the compiler around a symbol-rich listing/debug model.
+
+Emit these artifacts for every compile
+token dump
+
+AST dump
+
+symbol table dump
+
+frame layout report
+
+IR listing
+
+native assembly listing
+
+source line map
+
+procedure metadata
+
+Runtime debugger features
+At minimum:
+
+single-step by source line
+
+single-step by IR instruction
+
+breakpoints by source line
+
+show call stack
+
+show current procedure
+
+show locals/parameters
+
+inspect static chain
+
+inspect arbitrary memory
+
+inspect globals
+
+inspect heap blocks
+
+show array bounds and current indices
+
+trap on runtime errors
+
+Best UI split
+You already have Rust/Yew/WASM skills, so I would split it this way:
+
+compiler/debug metadata generator in C
+
+emulator instrumentation hooks in Rust or current emulator code
+
+browser debugger UI in Yew/WASM
+
+Views worth having:
+
+source pane
+
+current AST / scope pane
+
+call stack pane
+
+frame layout pane
+
+registers pane
+
+memory pane
+
+static-chain visualization
+
+disassembly pane
+
+IR pane
+
+For Pascal specifically, one killer feature is a scope-aware variable inspector:
+show locals, parameters, globals, and nonlocals via static-link traversal.
+
+Recommended project plan
+Milestone 1 — define the language subset
+Write these documents first:
+
+language.md
+
+runtime.md
+
+abi.md
+
+ir.md
+
+debug-format.md
+
+test-plan.md
+
+This matters more than code at the start.
+
+Milestone 2 — host interpreter for Pascal AST
+Before codegen, you can interpret the AST directly for a tiny subset.
+
+Pros:
+
+fastest way to validate parser + semantics
+
+easiest way to debug language rules
+
+Cons:
+
+not reusable for target execution
+
+Still, it is often worth doing for the first 2–3 milestones.
+
+Milestone 3 — p-code generator + host p-code VM
+This becomes your semantic reference implementation.
+
+Milestone 4 — target p-code VM on your 24-bit ISA
+Now real Pascal programs run on your emulator/FPGA without needing native codegen yet.
+
+Milestone 5 — native code generator
+Target your 24-bit ISA directly.
+
+Milestone 6 — debugger integration
+Hook source lines, symbols, frames, and memory inspection into the emulator UI.
+
+Milestone 7 — self-hosting subset
+Rewrite enough of the compiler in Pascal to compile itself.
+
+Open-source implementations worth studying
+You asked specifically about liberal licenses.
+
+Good for ideas / architecture
+Pascal-P / Pascal-P5 is historically important and directly relevant because it is a portable p-code Pascal family. The Pascal-P5 project is presented as the fifth version of the Zurich Pascal-P compiler and emphasizes ISO 7185 compliance. 
+
+Free Pascal is real, mature, and valuable to study conceptually, but its compiler itself is not BSD/MIT. Its FAQ says applications produced with its RTL are allowed to be proprietary because the RTL uses a modified LGPL exception, but that does not make the compiler source permissively licensed. 
+
+Stanford Pascal is interesting because it still uses p-code plus an interpreter, and the repo says the compiler files are Pascal/P-Code while the interpreter is in C. I did not find an explicit permissive license on the GitHub page I checked, so I would treat it as “study carefully, license unclear until verified.” 
+
+Small permissive educational repos
+These are useful for architecture ideas, not for production-grade reuse:
+
+JayPascal — MIT, Pascal compiler in C#. 
+
+XDPC — MIT-0, small educational Pascal compiler with native x86 codegen. Very relevant as a “small compiler that directly emits native code” example, even though it targets DOS/x86. 
+
+Qwerasdzxc/Pascal-Compiler — Apache-2.0, modular educational compiler with interpreter and C code generator. Architecturally useful because it separates lexer/parser/symbolizer/generator/runner. 
+
+One caution: many permissively licensed Pascal repos on GitHub are student or educational compilers, not robust reference implementations. They are good for structure, testing ideas, and scope control, but not for blindly trusting semantics.
+
+What I would personally avoid
+For your project, I would avoid:
+
+porting Turbo Pascal ideas too literally
+
+implementing full ISO Pascal before subset stability
+
+designing codegen before you define frame layout and static-scope access
+
+adding real numbers early
+
+building an optimizing compiler first
+
+trying to self-host too soon
+
+Suggested first deliverable
+Your first usable milestone should be:
+
+“Compile a small Pascal subset on the host into p-code, run it in a p-code VM on the emulator, and debug it with source-line stepping.”
+
+That gives you:
+
+proof of parsing
+
+proof of semantic analysis
+
+proof of runtime model
+
+proof of debugger architecture
+
+proof of target execution
+
+before native code generation complexity arrives.
+
+A concrete starting subset
+I would start with exactly this grammar surface:
+
+program
+
+const
+
+var
+
+scalar integer/boolean
+
+fixed arrays
+
+procedures with parameters
+
+function returning integer
+
+begin/end
+
+assignment
+
+if/then/else
+
+while/do
+
+relational operators
+
+arithmetic operators
+
+writeln builtin
+
+one-dimensional arrays only
+
+That is enough to validate:
+
+scopes
+
+frames
+
+calls
+
+control flow
+
+memory layout
+
+debugger variable display
+
+My recommendation in one sentence
+Start with a clean-room Pascal-S/Pascal-P style subset in C, targeting a small p-code VM first, build the debugger metadata and frame model from day one, and only then add a native 24-bit code generator and eventual self-hosting.
+
+If you want, I can turn this into a concrete architecture.md + milestone plan + test matrix + debugger metadata format tailored to your 24-bit ISA.
+
+
+So I want to split this project into layers.  A low-level p-code interpreter and possibly run-time.  How is memory typically managed in Pascal, malloc/free or gc or other?  Pascal would be the higher-level tooling to compile to the p-code.  Other languaged that compile to p-code would follow.
+
+
+Thought for 8s
+You want the project split into layers, with a low-level p-code machine/runtime first, and then Pascal as one front end targeting that machine, with room for other languages later. That is a good direction.
+
+It gives you:
+
+a stable execution substrate,
+
+a semantic reference model before native codegen,
+
+a reusable toolchain for multiple languages.
+
+The key design question now is the runtime model: stack, heap, globals, code, metadata, and how dynamic memory works.
+
+Short answer on Pascal memory management
+Classic Pascal was not generally garbage-collected. The usual model was:
+
+stack allocation for locals, parameters, temporaries
+
+static/global storage for globals
+
+heap allocation for dynamically created structures via new
+
+explicit reclamation, usually via dispose, or sometimes effectively “free everything at program end”
+
+That is still the cleanest model for your first implementation. Standard Pascal and mainstream descendants historically center on explicit heap management rather than GC. Free Pascal’s docs and wiki still document New/Dispose and GetMem/FreeMem style management, and its heap debugging support tracks allocation/deallocation rather than automatic tracing GC. 
+
+So for your first p-code runtime, I would recommend:
+
+no GC initially
+
+explicit heap operations
+
+optional region/arena reset at process end
+
+later, optional reference counting or tracing GC as a runtime extension for other languages
+
+Best layering for your project
+I would split the system like this:
+
+Layer 0 — target substrate
+Your existing pieces:
+
+assembler
+
+emulator
+
+FPGA hardware
+
+low-level monitor/debug hooks
+
+native calling convention for your 24-bit ISA
+
+This layer should know nothing about Pascal.
+
+Layer 1 — p-code VM / abstract machine
+This becomes the real foundation.
+
+It should define:
+
+instruction set
+
+value representation
+
+activation record/frame layout
+
+globals model
+
+heap model
+
+runtime traps
+
+debug metadata hooks
+
+Think of this as your language-neutral machine.
+
+Historically, Pascal p-code systems such as UCSD Pascal used a stack machine model, with a shared stack for expression evaluation and procedure frames. That is exactly the right family of design here. 
+
+Layer 2 — base runtime services
+This is not “Pascal runtime” yet. It is the minimal substrate any front end can rely on:
+
+heap allocator
+
+string/array block helpers
+
+bounds-check failure handler
+
+nil-pointer failure handler
+
+divide-by-zero handler
+
+assertion/trap support
+
+I/O hooks
+
+debug symbol and source mapping support
+
+Layer 3 — Pascal-specific runtime
+Only put Pascal-specific semantics here:
+
+new, dispose
+
+read, write, writeln
+
+Pascal file model, if you add it later
+
+set operations, if not in the VM
+
+conformant-array helpers, if you ever add them
+
+Pascal string helpers, if you extend beyond packed char arrays
+
+Layer 4 — front ends
+Start with:
+
+Pascal compiler → p-code
+
+Later:
+
+tiny BASIC → p-code
+
+structured Forth-like front end → p-code
+
+tiny Lisp → p-code
+
+maybe a C subset → p-code
+
+That is a strong architecture because the VM becomes your shared semantic platform.
+
+How memory is usually organized in a Pascal system
+A practical memory map for your p-code machine would be:
+
++--------------------+ high memory
+| debugger scratch   |
+| VM bookkeeping     |
++--------------------+
+| heap               |  grows upward
+|                    |
++--------------------+
+| free space         |
++--------------------+
+| stack              |  grows downward
+| call frames        |
+| eval stack         |
++--------------------+
+| globals/statics    |
++--------------------+
+| constants/literals |
++--------------------+
+| p-code / bytecode  |
++--------------------+ low memory
+That is a very natural fit for an emulator and FPGA target.
+
+Separate or unified stack?
+You have two choices:
+
+Option A — one unified stack
+Used for:
+
+procedure frames
+
+expression temporaries
+
+This matches classic p-code machine design well. UCSD p-Machine is described as using one shared stack for both procedure stack frames and instruction operands. 
+
+Pros
+
+simple VM
+
+fewer pointers/registers
+
+historically faithful
+
+Cons
+
+debugger is slightly harder
+
+expression stack corruption can damage frames if your VM is buggy
+
+less convenient for multiple languages with different evaluation models
+
+Option B — call stack + eval stack
+Separate:
+
+call stack for frames
+
+eval stack for p-code operands
+
+Pros
+
+cleaner debugger
+
+better invariants
+
+easier to support multiple front ends later
+
+easier to reason about stack depth separately from frame layout
+
+Cons
+
+slightly more VM state
+
+a bit less “classic”
+
+For your project, I would choose separate stacks unless you specifically want historical UCSD-like fidelity. It makes debugging much easier.
+
+Recommended runtime memory model
+For a first clean-room system, I would use four storage classes.
+
+1. Globals/statics
+Allocated once when program loads.
+
+Use for:
+
+global variables
+
+typed constants that need storage
+
+runtime state
+
+2. Stack
+Used for:
+
+parameters
+
+locals
+
+temporaries
+
+return address / dynamic link / static link
+
+This is where Pascal naturally lives for ordinary code.
+
+3. Heap
+Used for:
+
+pointers created by new
+
+dynamic records
+
+dynamic nodes for trees/lists
+
+later, strings or managed arrays if you choose
+
+4. Code/metadata space
+Used for:
+
+bytecode / p-code
+
+literal pools
+
+source line tables
+
+symbol tables for debugger
+
+What should heap allocation look like?
+For Pascal first version: explicit allocation
+I recommend these VM/runtime operations:
+
+HEAP_ALLOC size -> ptr
+
+HEAP_FREE ptr
+
+HEAP_ZERO ptr, size
+
+optional HEAP_REALLOC only if another language later wants it
+
+Pascal front end then maps:
+
+new(p) → allocate size of pointed-to type, assign pointer
+
+dispose(p) → free and optionally nil the pointer
+
+maybe mark/release as a nonstandard extension later
+
+That gives you a small, understandable runtime.
+
+Should the heap be malloc/free style?
+Yes, for the first version.
+
+Even if the source language says new/dispose, under the hood that is basically a typed wrapper around an allocator API equivalent to malloc/free. Free Pascal’s documentation explicitly distinguishes Pascal-level New/Dispose from lower-level GetMem/FreeMem, which supports this layered interpretation. 
+
+So the layering can be:
+
+VM allocator: raw blocks
+
+Pascal runtime: typed heap ops on top
+
+That is clean.
+
+Should Pascal use GC?
+Not initially.
+
+Reasons:
+
+not historically typical for classic Pascal
+
+adds runtime and debugger complexity
+
+muddies semantics while you are still validating the language
+
+not needed to get real Pascal programs working
+
+You can add GC later if another language benefits from it more.
+
+Good heap strategies for your VM
+For your hardware and emulator, here are the realistic options.
+
+Option 1 — bump allocator only
+Allocate by moving a heap pointer upward.
+
+No free except “reset all”.
+
+Pros
+
+tiny
+
+perfect for bring-up
+
+very easy to debug
+
+Cons
+
+cannot support true dispose
+
+leaks until program end
+
+Good for:
+
+compiler bring-up
+
+tests
+
+short-running tools
+
+Option 2 — free-list allocator
+Maintain block headers and a free list.
+
+Pros
+
+simple enough to implement
+
+supports dispose
+
+realistic for Pascal
+
+Cons
+
+fragmentation
+
+coalescing logic
+
+debugger must understand headers
+
+This is the best first “real” allocator.
+
+Option 3 — segregated size classes / slab style
+Useful later for managed runtimes or object-heavy languages.
+
+Pros
+
+fast
+
+predictable
+
+Cons
+
+more complexity
+
+overkill initially
+
+Option 4 — tracing GC
+Mark-sweep, copying, or generational.
+
+Pros
+
+future-proof for Lisp-like languages
+
+fewer leaks in managed languages
+
+Cons
+
+root scanning complexity
+
+interaction with stack maps
+
+debugger complexity
+
+moving GC complicates raw pointer semantics
+
+Not for version 1.
+
+My recommendation for your first allocator
+Implement two modes:
+
+Bring-up mode
+bump allocator
+
+no free
+
+reset heap between program runs
+
+Real mode
+free-list allocator with headers
+
+block size
+
+free/used bit
+
+maybe next/prev free links
+
+optional coalescing on free
+
+This gives you:
+
+fastest path to first success
+
+smooth transition to a usable Pascal runtime
+
+Pascal-specific semantic model for memory
+Pascal usually feels cleaner than C because most ordinary objects are not heap allocated.
+
+Typical pattern:
+
+local records/arrays: stack
+
+globals: static
+
+only pointer-based structures: heap
+
+That means your front end should aggressively prefer stack/static placement and use heap only when the source says so.
+
+Suggested mapping
+Variables
+local scalar/record/array → frame offset
+
+global scalar/record/array → global segment offset
+
+Parameters
+by value → copied into frame or parameter area
+
+var parameter → address passed in
+
+Functions/procedures
+frame contains locals and bookkeeping
+
+static link for nested scopes
+
+Pointers
+24-bit pointer to heap object or global/static object
+
+nil = 0 is simplest, unless address 0 is valid in your architecture
+
+Suggested p-code machine operations for memory
+I would define VM instructions along these lines.
+
+Addressing/storage
+LDG offset — load global
+
+STG offset — store global
+
+LDL offset — load local
+
+STL offset — store local
+
+LDA_LOCAL offset — push address of local
+
+LDA_GLOBAL offset — push address of global
+
+LOAD_IND size
+
+STORE_IND size
+
+Frame/nonlocal access
+FOLLOW_STATIC depth
+
+LDN depth, offset
+
+STN depth, offset
+
+LDA_NONLOCAL depth, offset
+
+Heap
+ALLOC size
+
+FREE
+
+MEMZERO size
+
+MEMCOPY size
+
+Checking
+CHK_BOUNDS lo, hi
+
+CHK_NIL
+
+CHK_TAG if you later add tagged objects
+
+TRAP code
+
+Aggregate helpers
+INDEX elem_size, low_bound
+
+FIELD offset
+
+This instruction set can support Pascal cleanly and still be reusable for other languages.
+
+Should the runtime be Pascal-specific or generic?
+You said other languages may follow. So keep the lower runtime generic.
+
+Generic VM/runtime should own
+raw allocation
+
+raw memory movement
+
+stack/frame model
+
+trap handling
+
+debug hooks
+
+primitive I/O abstraction
+
+Pascal front end/runtime should own
+static typing rules
+
+new / dispose
+
+var parameter semantics
+
+nested procedure semantics
+
+Pascal built-ins
+
+Pascal standard type semantics
+
+That split lets you later add languages with different memory models.
+
+For example:
+
+Pascal → explicit allocation
+
+Lisp → GC heap
+
+BASIC → dynamic strings + simple reference counting
+
+Forth-like language → manual dictionary arena
+
+Same VM, different front-end/runtime layers.
+
+If other languages will follow, what memory model should the VM expose?
+A good neutral model is:
+
+VM object kinds
+Not source-language-visible, just runtime categories:
+
+raw block
+
+string block
+
+array block
+
+record/object block
+
+closure/env block
+
+runtime descriptor block
+
+You do not need this all up front, but it is helpful to reserve the concept.
+
+Minimal neutral API
+At the VM/runtime boundary:
+
+alloc raw block
+
+free raw block
+
+read/write primitive
+
+copy/fill
+
+query size
+
+optional type tag in header
+
+optional finalizer hook later
+
+That is enough to host both manual-memory and managed-memory languages.
+
+Debugger implications
+If memory matters, design the allocator and frames so the debugger can introspect them.
+
+Heap block header suggestion
+Each allocated block could have:
+
+struct HeapHeader {
+    u24 size_words;
+    u24 flags;
+    u24 type_id;      // optional
+    u24 prev_or_next; // depending on allocator design
+}
+Useful flags:
+
+allocated/free
+
+Pascal object
+
+array
+
+string
+
+record
+
+internal runtime block
+
+maybe “poisoned/freed”
+
+Then your debugger can show:
+
+live heap blocks
+
+free blocks
+
+leaks on exit
+
+block ownership/type
+
+double free attempts
+
+use-after-free if you poison blocks in debug mode
+
+Frame record suggestion
+Each call frame should expose:
+
+return PC
+
+previous frame pointer / dynamic link
+
+static link
+
+procedure id
+
+locals base
+
+eval stack base snapshot
+
+That makes nested Pascal debugging much easier.
+
+A practical staged plan
+Phase 1 — define the VM first
+Write documents for:
+
+vm-isa.md
+
+vm-memory.md
+
+vm-abi.md
+
+vm-debug.md
+
+Do this before writing much code.
+
+Phase 2 — build a tiny VM with no Pascal yet
+Support:
+
+constants
+
+arithmetic
+
+branches
+
+calls
+
+locals/globals
+
+heap alloc/free
+
+traps
+
+line stepping
+
+Then hand-write small p-code tests.
+
+Phase 3 — add Pascal subset front end
+Compile a tiny subset to p-code:
+
+integers
+
+booleans
+
+assignment
+
+if
+
+while
+
+procedures
+
+arrays
+
+records
+
+new / dispose
+
+Phase 4 — add debugger
+Debugger should show:
+
+p-code instruction stream
+
+current line
+
+frame chain
+
+static chain
+
+locals
+
+globals
+
+heap blocks
+
+Phase 5 — let a second language target the same VM
+This will force you to keep the VM generic rather than accidentally baking Pascal into it.
+
+Concrete recommendation on memory policy
+If I were designing this for your 24-bit platform, I would do this:
+
+VM v1
+separate call stack and eval stack
+
+globals segment
+
+heap with bump allocator in bring-up mode
+
+free-list allocator in normal mode
+
+no GC
+
+explicit traps
+
+pointer is 24-bit
+
+debug headers on every heap block in debug builds
+
+Pascal v1
+no GC
+
+new / dispose
+
+stack for locals
+
+globals for statics
+
+heap only for pointers
+
+optional leak report at process exit
+
+runtime bounds checks enabled by default
+
+Later multi-language extension
+Add optional alternate heap managers:
+
+manual heap
+
+reference-counted heap
+
+tracing GC heap
+
+and let each front end choose one.
+
+That avoids forcing Pascal into a GC design it does not need, while still leaving room for Lisp-like or scripting languages later.
+
+Bottom line
+For your layered architecture, I would treat Pascal as a typed front end over a generic p-code VM, and I would use explicit heap management, not GC, for the first runtime.
+
+That means:
+
+stack for locals and temporaries
+
+globals for static storage
+
+heap for pointer-based dynamic objects
+
+new / dispose at the Pascal level
+
+allocator API underneath that is basically malloc/free in spirit
+
+GC only later, as an optional runtime mode for other languages
+
+That is historically aligned with Pascal, technically simpler, and a better base for a debugger and for additional languages. 
+
+I can turn this into a concrete vm-memory.md and pcode-opcodes.md draft next.
+
+
+Okay, in order to write tests, I'd like to introduce a p-code-assembler. Does tha make sense?  It would be a subset of Pascal not sharing Pascal idioms, but enough to create Hello World, toggle LEDs, read/write UART.   It would have a simple calling convention, not support typing per-sed, or complex data structures.  The target ISA is integer only, so no floating point.  Does this make sense?
+
+Yes — that makes a lot of sense.
+
+In fact, for your project I think a p-code assembler is one of the best early moves, because it lets you separate three problems that otherwise get tangled together:
+
+VM design
+
+runtime / calling convention design
+
+Pascal front-end correctness
+
+If you skip the assembler, every early failure is ambiguous:
+
+is the VM wrong?
+
+is the runtime wrong?
+
+is the code generator wrong?
+
+is the parser wrong?
+
+is the Pascal semantic analysis wrong?
+
+A p-code assembler gives you a way to test the VM and runtime directly, with tiny hand-written programs.
+
+Restating the architecture
+You are proposing a layered system like this:
+
+Layer A — p-code VM
+Executes a small instruction set.
+
+Layer B — p-code assembler
+Human-writable source language for tests, demos, low-level runtime bring-up.
+
+Layer C — runtime library / monitor bindings
+UART, LED, memory, traps, maybe stack/heap helpers.
+
+Layer D — Pascal compiler
+Compiles Pascal into p-code.
+
+Layer E — later front ends
+Other languages also target the same p-code.
+
+That is a very good architecture.
+
+The p-code assembler becomes for your VM what assembly is for a real ISA:
+
+a precise test tool
+
+a bootstrap tool
+
+a debugger input language
+
+a way to write tiny runtime pieces before Pascal is ready
+
+Why this is a strong idea
+1. It gives you direct VM tests
+You will want tests like:
+
+push constants, add, print result
+
+branch on zero
+
+call/return
+
+access locals/globals
+
+follow static/dynamic links if you have them
+
+allocate/free heap block
+
+write UART
+
+toggle LED
+
+bounds trap
+
+nil trap
+
+These are much easier to express in a tiny assembly-like language than in Pascal.
+
+2. It lets you bootstrap the runtime before Pascal exists
+Before the Pascal compiler works, you still need:
+
+startup
+
+I/O shims
+
+debug/trap handlers
+
+maybe memory helpers
+
+A p-code assembler lets you write these as VM-level programs or modules.
+
+3. It clarifies the calling convention early
+You said “simple calling convention.” Good.
+
+The assembler forces you to define:
+
+what a call frame looks like
+
+argument passing
+
+return values
+
+local storage reservation
+
+stack cleanup rules
+
+That discipline helps both the VM and Pascal backend.
+
+4. It gives you reproducible debugger cases
+Debugger bring-up is hard if every test comes from a buggy compiler.
+
+With p-asm, you can hand-write:
+
+a three-function call chain
+
+a recursive countdown
+
+a loop with locals
+
+a UART output routine
+
+a deliberate trap
+
+Then verify stepping, breakpoints, stack display, and memory inspection.
+
+My recommendation: make it explicitly not Pascal
+I agree with your instinct that it should not share Pascal idioms.
+
+Do not try to make it “tiny Pascal.”
+
+Make it look like a machine-oriented textual form.
+
+That keeps the layers clean:
+
+Pascal is a source language
+
+p-asm is a target-language authoring tool
+
+That distinction is healthy.
+
+What the p-code assembler should be
+Think of it as:
+
+untyped or lightly typed
+
+integer-only
+
+explicit control flow
+
+explicit loads/stores
+
+explicit call frames
+
+explicit memory operations
+
+labels
+
+directives for globals, constants, strings, imports/exports
+
+It should feel closer to:
+
+bytecode assembly
+
+threaded-code assembly
+
+simple VM macro assembly
+
+than to Pascal or C.
+
+Good scope for v1
+You want enough to write:
+
+Hello World
+
+LED toggle
+
+UART read/write
+
+simple loops
+
+simple function calls
+
+stack and global tests
+
+That suggests a very small feature set.
+
+Source language features
+labels
+
+procedures/functions
+
+constants
+
+string literals
+
+integer literals
+
+comments
+
+directives for globals/data
+
+instructions
+
+optional macros later
+
+No need initially for
+type declarations
+
+structs
+
+arrays in source syntax
+
+records
+
+source-level pointers
+
+floating point
+
+polymorphism
+
+expression parsing beyond maybe trivial immediate syntax
+
+A good design principle
+The assembler should expose the VM’s semantics almost 1:1.
+
+So if the VM has an instruction like:
+
+PUSH 42
+
+LOADG uart_status
+
+JZ loop
+
+CALL putc
+
+RET
+
+then the assembler should map directly to that.
+
+Avoid “convenient” high-level sugar too early.
+
+You want this tool mainly for:
+
+clarity
+
+testing
+
+determinism
+
+not productivity.
+
+One key decision: stack machine vs explicit locals model
+Since this is p-code, the natural design is a stack-oriented assembler.
+
+Example style:
+
+proc main
+    push 72
+    call putc
+    push 105
+    call putc
+    push 10
+    call putc
+    halt
+endproc
+But for debugging and maintainability, I recommend you also support named local slots or explicit frame offsets.
+
+For example:
+
+proc blink locals 1
+loop:
+    push 1
+    out led
+    call delay
+    push 0
+    out led
+    call delay
+    jmp loop
+endproc
+or, more machine-like:
+
+proc blink 1
+loop:
+    push 1
+    storeg LED_PORT
+    call delay
+    push 0
+    storeg LED_PORT
+    call delay
+    jmp loop
+endproc
+That is enough.
+
+Suggested minimum p-code VM model
+For your custom integer-only machine, I would keep the VM itself integer-only too.
+
+Core VM state
+pc — p-code instruction pointer
+
+fp — frame pointer
+
+sp — eval stack pointer
+
+gp — globals base, or implicit globals segment
+
+maybe hp — heap pointer if heap exists now
+
+Core data model
+one scalar word type: signed/unsigned 24-bit integer value
+
+addresses are also word-sized
+
+byte loads/stores handled explicitly if needed for UART and strings
+
+That is enough for quite a while.
+
+Suggested instruction categories
+Stack / constants
+push <imm>
+
+dup
+
+drop
+
+swap
+
+over
+
+Arithmetic / logic
+add
+
+sub
+
+mul
+
+div
+
+mod
+
+neg
+
+and
+
+or
+
+xor
+
+not
+
+Comparison
+eq
+
+ne
+
+lt
+
+le
+
+gt
+
+ge
+
+These can push 0/1.
+
+Control flow
+jmp <label>
+
+jz <label>
+
+jnz <label>
+
+call <proc>
+
+ret
+
+halt
+
+trap <code>
+
+Frame/local/global access
+enter <nlocals>
+
+leave
+
+loadl <offset>
+
+storel <offset>
+
+loadg <symbol>
+
+storeg <symbol>
+
+addrg <symbol>
+
+addrl <offset>
+
+Indirect memory
+load
+
+store
+
+loadb
+
+storeb
+
+Optional runtime
+alloc <size>
+
+free
+
+sys <id> or hostcall <id>
+
+You may not need heap yet, but having the slot reserved is useful.
+
+Calling convention recommendation
+Since this is for bring-up and testing, make the convention brutally simple.
+
+Suggested convention
+arguments are pushed on the eval stack
+
+call foo
+
+callee uses enter nlocals
+
+arguments become addressable relative to frame pointer
+
+return value is pushed on the eval stack before ret
+
+caller removes args if needed, or callee does — pick one and stick to it
+
+For simplicity, I would choose:
+
+Better v1 convention
+caller pushes args
+
+call foo
+
+callee reads args at known negative offsets from fp
+
+callee leaves one return value on the eval stack, or none for procedures
+
+callee pops its frame only
+
+arguments are cleaned by callee or encoded in ret n
+
+A nice compact form is:
+
+ret 0 for no args
+
+ret 2 meaning pop 2 args and return
+
+or retv 2 meaning return value + pop 2 args
+
+But that may complicate the VM slightly.
+
+A simpler alternative:
+
+keep call frames separate from eval stack
+
+copy args into frame slots on call
+
+That is cleaner but a bit more machinery.
+
+For early work, either is fine. If you expect lots of debugging, a separate frame area is easier to reason about.
+
+For your use case, I would recommend two abstractions for I/O
+Since you want UART and LED access, decide whether p-code talks to:
+
+Option A — VM-level abstract devices
+Example:
+
+sys PUTC
+
+sys GETC
+
+sys LED_WRITE
+
+Pros
+
+portable across host interpreter and real hardware
+
+easy to test
+
+easier debugger integration
+
+Cons
+
+less “metal”
+
+Option B — memory-mapped addresses
+Example:
+
+push UART_DATA
+
+push 65
+
+storeb
+
+Pros
+
+closer to the hardware
+
+fewer abstractions
+
+Cons
+
+less portable
+
+awkward for hosted tests
+
+slightly harder to evolve
+
+Best answer: support both
+Use memory-mapped addresses in the runtime if you want, but also provide small VM/syscall abstractions for common tasks.
+
+For example:
+
+putc implemented as runtime p-asm
+
+inside it, either call sys PUTC on host, or do memory-mapped UART on target
+
+That keeps the assembler small and the runtime portable.
+
+Hello World / LED / UART are perfect early test cases
+These are exactly the right kinds of tests.
+
+Hello World tests
+Validates:
+
+string/data section handling
+
+loops
+
+loadb/storeb
+
+call/return
+
+UART output
+
+LED toggle tests
+Validates:
+
+MMIO writes
+
+loops
+
+delay call structure
+
+integration with emulator/FPGA
+
+UART read/write
+Validates:
+
+polling loops
+
+conditional branching
+
+MMIO reads and writes
+
+byte operations
+
+Those will shake out most VM bugs quickly.
+
+A concrete source-language sketch
+Something like this would work well:
+
+.const UART_DATA   0xFF0100
+.const UART_STATUS 0xFF0101
+.const LED_PORT    0xFF0200
+
+.proc putc
+    ; arg0 at fp-1
+wait:
+    push UART_STATUS
+    loadb
+    push 1
+    and
+    jz wait
+
+    push UART_DATA
+    loadarg 0
+    storeb
+    ret 1
+.end
+
+.proc puts
+loop:
+    loadarg 0
+    loadb
+    dup
+    jz done
+    call putc
+    loadarg 0
+    push 1
+    add
+    storearg 0
+    jmp loop
+done:
+    drop
+    ret 1
+.end
+
+.data msg "Hello, world!\n", 0
+
+.proc main
+    push msg
+    call puts
+    halt
+.end
+I am not saying this exact syntax is best, only that this level of abstraction is appropriate.
+
+One subtle point: typed vs untyped
+You said “not support typing per se.”
+
+That is right for the assembler source language. But the VM still needs operational widths.
+
+Even in an “untyped” p-code assembler, you will still need distinctions like:
+
+word load/store
+
+byte load/store
+
+signed vs unsigned compare, maybe
+
+address vs integer conventions, even if both are same-sized
+
+So the source language can be untyped, but the instruction set should still be explicit enough to avoid ambiguity.
+
+For example:
+
+load = word
+
+loadb = byte
+
+lt = signed compare
+
+ltu = unsigned compare if needed later
+
+This will matter for UART, chars, string traversal, and array/string runtime work.
+
+Should the assembler include macros?
+Not initially.
+
+For v1, I would keep it extremely small:
+
+labels
+
+constants
+
+procedures
+
+data/string directives
+
+instructions
+
+Then after the VM is stable, add:
+
+.macro
+
+.include
+
+conditional assembly
+
+symbolic frame slot aliases
+
+Macros are helpful later, but they can hide VM design problems early.
+
+What to test first
+I would define a staged test suite.
+
+Stage 1 — pure VM instruction tests
+push/add/sub
+
+dup/drop/swap
+
+compare/branch
+
+simple halt
+
+Stage 2 — procedure tests
+one call
+
+nested calls
+
+recursion
+
+return value
+
+locals
+
+Stage 3 — memory tests
+globals
+
+indirect load/store
+
+byte load/store
+
+string walk
+
+Stage 4 — device tests
+UART output
+
+UART polling input
+
+LED on/off
+
+blink loop
+
+Stage 5 — error tests
+bad opcode
+
+stack underflow
+
+invalid memory access
+
+explicit trap
+
+These tests should exist before Pascal codegen starts producing real programs.
+
+This also helps your future debugger design
+A p-code assembler pairs naturally with a debugger.
+
+You can support debug info at two levels:
+
+Level 1 — instruction/label level
+current pc
+
+current proc
+
+label names
+
+stack contents
+
+frame contents
+
+Level 2 — source mapping
+p-asm source line to p-code address
+
+later Pascal source line to p-code address
+
+That means your debugger can be useful before Pascal exists.
+
+This is a big win.
+
+One thing I would avoid
+I would avoid making the p-code assembler too much like a “portable assembly language for the target ISA.”
+
+It should target the VM, not become a second real ISA project.
+
+Otherwise you risk re-creating a complicated lower-level compiler target and losing the simplicity benefit.
+
+So keep it:
+
+stack-based
+
+compact
+
+procedural
+
+explicit
+
+test-friendly
+
+My recommendation
+Yes, introduce a p-code assembler now.
+
+Make it:
+
+machine-like, not Pascal-like
+
+integer-only
+
+stack-oriented
+
+simple calling convention
+
+labels + directives + instructions
+
+enough for:
+
+Hello World
+
+LED toggle
+
+UART I/O
+
+loops
+
+calls
+
+globals
+
+byte/word memory access
+
+And use it for:
+
+VM bring-up
+
+runtime bring-up
+
+debugger bring-up
+
+regression tests
+
+hand-authored demos
+
+That is a very strong foundation for Pascal and later languages.
+
+Recommended next concrete artifacts
+Write these first:
+
+pvm.md
+VM state
+
+memory layout
+
+stack model
+
+traps
+
+pasm.md
+syntax
+
+directives
+
+labels
+
+procedures
+
+calling convention
+
+opcode-table.md
+every opcode
+
+operands
+
+stack effect
+
+semantics
+
+trap conditions
+
+tests/
+hand-written .pasm test programs
+
+expected stdout / memory / trap results
+
+The best next step is probably to define the actual pasm syntax and the first 20–30 opcodes.
+
+
+
+
+

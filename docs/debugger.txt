@@ -1,0 +1,1121 @@
+
+
+
+
+I want to create a Yew/Rust/WASM web app debugger for my custom p-code VM, written in COR24 assembler.  I have similar debuggers for cor24 .s files and for Forth (implemented in .s and .fth) and for Macro Lisp (implemented in C (which was impemented in Rust) and .l24 lisp). So, how do I take the p-code VM and debug it.  Specifically I'm looking for the kind of displays, of what data, which stack(s), which registers, what memory, how to single step p-code.  Start out simple (no watches, no breakpoints).  I've also implemented TSO Pipeline debuggers (w/watches and breakpoints).    Need ideas for what to build, how it will look, use-cases, and how to make it extensible so I could add watches and break-points.  For now being able to see how memory is used, possibly dis-assemble.  What do I not show?  What makes sense?
+
+You want a Yew/Rust/WASM debugger UI for a custom p-code VM whose implementation lives in COR24 assembler, and you want guidance on:
+
+what to show
+
+how it should look
+
+what data matters
+
+how to single-step p-code rather than only COR24
+
+what not to show initially
+
+how to keep the design extensible for later watches and breakpoints
+
+Given your existing debugger work for COR24 assembly, Forth, Macro Lisp, and even TSO pipeline visualizations, the right move is not to build “just another machine debugger.” Build a two-level debugger with a strong bias toward the p-code semantic level, while still allowing drill-down into the COR24 implementation when needed.
+
+1. High-level architecture
+Core idea
+Your debugger should treat the system as having three layers:
+
+UI / debugger model layer in Rust/Yew/WASM
+
+VM semantic layer for p-code execution state
+
+host implementation layer for COR24 machine state
+
+That means the debugger is primarily about:
+
+current p-code instruction
+
+p-code PC / frame / stack state
+
+VM-managed memory regions
+
+mapping from p-code step -> underlying COR24 routine(s)
+
+The key design principle is:
+
+Default to showing the p-code machine, not the COR24 machine.
+The COR24 state is subordinate and optionally inspectable.
+
+If you do not enforce that, the debugger turns into an assembler debugger with p-code labels painted on top, which is usually the wrong abstraction for debugging compiler/runtime/VM behavior.
+
+2. What problem the debugger is solving
+You are debugging at least four different classes of bugs:
+
+A. VM semantic bugs
+Examples:
+
+wrong opcode semantics
+
+wrong stack effect
+
+incorrect frame layout
+
+incorrect local-variable addressing
+
+incorrect call/return behavior
+
+bad heap or static data addressing
+
+wrong p-code dispatch
+
+B. p-code program bugs
+Examples:
+
+generated p-code is wrong
+
+compiler emits invalid operand order
+
+procedure prologue/epilogue mismatch
+
+incorrect jump targets
+
+C. VM implementation bugs in COR24
+Examples:
+
+dispatch loop corrupts registers
+
+VM metadata in memory is wrong
+
+stack pointer update off by one word
+
+byte/word addressing bugs
+
+D. visualization / understanding needs
+Examples:
+
+“where is memory going?”
+
+“what frame am I in?”
+
+“why is this return address wrong?”
+
+“why did this operand get consumed?”
+
+Because these are mixed, the debugger should let the user move between:
+
+semantic view
+
+runtime layout view
+
+low-level implementation view
+
+But the semantic view should always be first-class.
+
+3. The minimum viable debugger
+Start with this and no more:
+
+Main panels
+1. Control bar
+Buttons:
+
+Reset
+
+Run
+
+Pause
+
+Step p-code
+
+Step micro / host
+
+Step over call
+
+Step out
+
+Rewind one step only if you later support trace history
+
+At minimum, you need only:
+
+Reset
+
+Run
+
+Pause
+
+Step p-code
+
+Step host
+
+2. Current instruction panel
+Show:
+
+current p-code PC
+
+current decoded p-code instruction
+
+operands
+
+stack effect hint
+
+resolved symbolic target if applicable
+
+Example:
+
+PC: 0042
+Opcode: CALL 17
+Meaning: call procedure "fib"
+Stack effect: ( arg0 -- ret0 )
+Target paddr: 0100
+This should be the main focal point.
+
+3. P-code stack panel
+Show the VM data stack in semantic order, top clearly marked.
+
+If your p-code machine uses multiple stacks, show them separately:
+
+operand / evaluation stack
+
+call stack
+
+return stack
+
+control stack
+
+display / lexical chain stack if applicable
+
+Do not collapse these conceptually if the VM distinguishes them.
+
+4. Call frame panel
+Show current frame:
+
+frame pointer / base pointer
+
+current procedure name or index
+
+locals
+
+parameters
+
+return address
+
+dynamic link
+
+static link, if you use one
+
+This is one of the most useful views and should probably be richer than raw memory.
+
+5. Memory map panel
+Show high-level regions, not only raw hex:
+
+p-code instruction area
+
+VM globals
+
+VM stack(s)
+
+frame stack
+
+heap
+
+literal pool / constants
+
+host scratch area
+
+dispatch tables
+
+A segmented bar plus detailed table works well.
+
+6. Optional low-level COR24 panel
+Collapsed by default.
+
+Show:
+
+COR24 PC
+
+relevant registers
+
+SP / FP
+
+selected memory window
+
+current assembler instruction
+
+This is for VM implementation debugging, not everyday use.
+
+4. What state to represent explicitly
+Your debugger state model should separate semantic VM state from host machine state.
+
+VM state
+This should be a Rust struct something like:
+
+struct VmDebugState {
+    running: bool,
+    halted: bool,
+
+    pcode_pc: u32,
+    current_instr: DecodedPcodeInstr,
+
+    data_stack: Vec<Value>,
+    call_stack: Vec<CallFrame>,
+    return_stack: Vec<ReturnEntry>,
+
+    globals: Vec<MemoryCell>,
+    heap_summary: HeapSummary,
+    memory_regions: Vec<MemoryRegion>,
+
+    vm_registers: VmRegisters,
+    dispatch_state: DispatchState,
+
+    source_map: Option<PcodeSourceMap>,
+}
+Host state
+struct HostDebugState {
+    cor24_pc: u32,
+    cor24_sp: u32,
+    cor24_fp: u32,
+    regs: [u32; N],
+    flags: HostFlags,
+
+    current_host_instr: Option<DecodedCor24Instr>,
+    host_memory_windows: Vec<MemoryWindow>,
+}
+Combined state
+struct DebuggerState {
+    vm: VmDebugState,
+    host: HostDebugState,
+    stepping_mode: SteppingMode,
+    trace: Vec<TraceEvent>,
+}
+This separation matters because it lets you:
+
+step at different abstraction levels
+
+hide irrelevant host details
+
+later add watches and breakpoints at either level
+
+5. Registers: which ones matter?
+You asked specifically which registers to show.
+
+Show these at the p-code level
+Even if they are not physical registers, invent/debug-expose them:
+
+p-code PC
+
+current frame pointer
+
+stack top index
+
+heap pointer
+
+current procedure id
+
+dispatch opcode
+
+status / halted / fault
+
+optionally last fault reason
+
+These are much more meaningful than raw COR24 registers.
+
+Show these at the host COR24 level
+Only show what matters to VM execution:
+
+PC
+
+SP
+
+FP or equivalent
+
+the few registers the interpreter uses as VM state carriers
+
+flags if branch/debugging needs them
+
+Do not show every machine register prominently unless the VM actually depends on them in a meaningful/debuggable way.
+
+The rule is:
+
+If a machine register is just transient interpreter plumbing, it should not dominate the UI.
+
+6. Which stacks to show?
+This is one of the most important design choices.
+
+If your VM has only one stack
+Show:
+
+top few entries
+
+full scrollable stack
+
+type or tag if available
+
+logical index from frame base
+
+If your VM has multiple stacks
+Show each separately, because mixing them causes confusion.
+
+Typical candidates:
+
+Data / operand stack
+For expression evaluation.
+
+Call stack
+Procedure activations.
+
+Return stack
+Return addresses or continuation records.
+
+Block / control stack
+If needed for loops, exception-like constructs, or nested control flow.
+
+Display / lexical stack
+If your VM supports Pascal-like nested scopes.
+
+Best practice
+Have a Stack Overview panel showing all stacks with:
+
+name
+
+depth
+
+top item
+
+bounds / region
+
+Then clicking one opens detailed entries.
+
+This prevents the UI from becoming too tall while still exposing structure.
+
+7. Memory: what should the user see?
+You should not begin with a single giant hex dump. That is useful only after you already know the bug.
+
+Instead show memory in layers.
+
+A. Memory region map
+This is the first thing to show.
+
+Example regions:
+
+p-code text
+
+constants
+
+globals
+
+activation record stack
+
+operand stack
+
+heap
+
+VM metadata / tables
+
+host interpreter text/data if you want advanced mode
+
+Each region should show:
+
+start
+
+end
+
+size
+
+current usage
+
+ownership / meaning
+
+This is great for understanding how memory is used.
+
+B. Region detail view
+When the user selects a region, show a smarter renderer.
+
+For example:
+
+p-code text
+Show disassembly, not hex.
+
+stack region
+Show stack entries and frame boundaries.
+
+globals
+Show symbolic names if known.
+
+heap
+Show blocks, tags, sizes, links, allocation status.
+
+C. Raw memory window
+Useful, but secondary.
+
+Hex + ASCII + semantic annotations.
+Only one or two windows at first.
+
+8. Disassembly: yes, but at the right level
+You said “possibly dis-assemble.”
+Yes, absolutely, but the primary disassembly should be p-code disassembly.
+
+Show p-code disassembly
+A scrollable listing:
+
+address
+
+opcode
+
+operands
+
+optional labels
+
+optional symbolic comments
+
+highlight current PC
+
+maybe faded marks for recent instructions
+
+Example:
+
+0038  LDC   1
+0039  LDC   2
+0040  ADD
+0041  STO   local[0]
+0042  CALL  fib
+0043  JMP   0050
+Secondary: host disassembly
+This is for the COR24 interpreter implementation.
+
+Useful for:
+
+dispatch bugs
+
+entry/exit sequence bugs
+
+stack corruption inside interpreter
+
+But it should be hidden or in an “implementation” tab.
+
+9. How to single-step p-code
+This is the hardest architectural point.
+
+You need to decide what a single p-code step means relative to the underlying COR24 interpreter.
+
+Correct model
+A p-code step should mean:
+
+Execute exactly one semantic p-code instruction, even if it takes many COR24 instructions.
+
+That means your VM/interpreter needs a notion of:
+
+instruction boundary
+
+before-state
+
+after-state
+
+Best implementation options
+Option 1: explicit interpreter hook at dispatch boundary
+At the start and/or end of each p-code dispatch:
+
+capture VM state snapshot
+
+notify debugger
+
+pause after one p-code instruction if stepping mode says so
+
+This is the cleanest.
+
+Pseudo-logic:
+
+loop:
+  fetch opcode at pcode_pc
+  debugger_event(BeforePcodeStep)
+  execute opcode
+  debugger_event(AfterPcodeStep)
+  if step_mode == PcodeSingleStep: pause
+  goto loop
+Option 2: instrument each opcode handler
+Each handler reports:
+
+entered opcode X
+
+completed opcode X
+
+faulted in opcode X
+
+This is useful if some handlers internally branch or call helpers.
+
+Option 3: infer boundary from host PC ranges
+Least desirable.
+
+You identify that host addresses A..B implement opcode ADD, etc.
+This is fragile and should only be supplementary.
+
+Recommendation
+Use explicit semantic instrumentation in the VM, even if written in COR24 assembler.
+
+You do not want the browser debugger reconstructing p-code semantics from raw host traces.
+
+10. Step modes that make sense
+You asked about single stepping. Start with only a few modes.
+
+1. Step p-code
+Executes one semantic VM instruction.
+
+This should be the default.
+
+2. Step host
+Executes one COR24 instruction.
+
+Advanced mode for VM debugging.
+
+3. Step over call
+At p-code level:
+
+if current opcode is CALL, run until return to caller
+
+otherwise same as Step p-code
+
+Very useful early.
+
+4. Step out
+Run until current frame exits.
+
+Useful once call frames are visible.
+
+Do not start with step into/over/out plus breakpoints plus watches plus reverse debugging. Start with p-code step and host step.
+
+11. What the UI should look like
+A simple layout that will work well in Yew:
+
+Top row
+control bar
+
+run state
+
+current mode
+
+current procedure / p-code PC
+
+Left column
+p-code disassembly
+
+current instruction details
+
+Center column
+current frame
+
+data stack
+
+call stack
+
+Right column
+memory region map
+
+selected memory region detail
+
+collapsed host/COR24 panel
+
+A rough mental model:
+
++---------------------------------------------------------------+
+| Controls: Reset Run Pause Step-P Step-H StepOver StepOut      |
++----------------------+----------------------+------------------+
+| P-code Disassembly   | Frame / Locals       | Memory Map       |
+| current line hilite  | Params / Return addr | Regions          |
+| nearby instructions  | Dynamic/static links | Usage bars       |
++----------------------+----------------------+------------------+
+| Current Instr Detail | Data Stack           | Region Detail    |
+| opcode operands      | top -> bottom        | stack/heap/glob  |
+| stack effect         | typed/tagged         |                  |
++----------------------+----------------------+------------------+
+| Host / COR24 (collapsed by default)                            |
++---------------------------------------------------------------+
+This layout favors the semantic view.
+
+12. What not to show initially
+This is as important as what to show.
+
+Do not show everything all at once
+Avoid starting with:
+
+every COR24 register always visible
+
+huge hex dumps everywhere
+
+watch panes with no watch model yet
+
+source-level data if you do not have reliable symbol maps
+
+pipeline/TSO-style timing clutter unless the VM is truly concurrent
+
+microarchitectural internals irrelevant to p-code semantics
+
+Specifically avoid these mistakes
+Mistake 1: host state dominates screen space
+Then users debug the interpreter instead of the VM program.
+
+Mistake 2: raw memory before semantic views
+Then users hunt bytes instead of understanding frames and stacks.
+
+Mistake 3: too many panes
+Yew/WASM UI can become visually busy fast.
+
+Mistake 4: pretending types exist when they do not
+If values are untyped words, show that honestly.
+If tags exist, show tags.
+Do not invent too much false structure.
+
+13. What makes sense to annotate
+Your debugger gets much better if it annotates data, even lightly.
+
+Good annotations
+current procedure name
+
+local slot names
+
+parameter names
+
+frame boundaries
+
+jump targets with labels
+
+constants decoded symbolically
+
+stack effect hints
+
+which memory word is “return address”
+
+which words are “saved frame pointer”, “dynamic link”, etc.
+
+Minimal metadata format
+You likely want a sidecar debug-symbol structure:
+
+struct PcodeDebugSymbols {
+    procedures: Vec<ProcedureSymbol>,
+    labels: Vec<LabelSymbol>,
+    globals: Vec<GlobalSymbol>,
+    local_maps: HashMap<ProcId, Vec<LocalSymbol>>,
+    comments: HashMap<u32, String>,
+}
+This can come from:
+
+the p-code assembler/compiler
+
+manually authored metadata
+
+generated tables
+
+This is optional at first but highly valuable.
+
+14. Use-cases the debugger should support
+Design around concrete scenarios.
+
+Use-case 1: basic instruction semantics
+“I step ADD and want to see two operands consumed and one result produced.”
+
+Needed views:
+
+current opcode
+
+operand stack before/after
+
+p-code PC change
+
+Use-case 2: call/return correctness
+“I call procedure P and want to confirm frame layout and return address.”
+
+Needed views:
+
+current frame
+
+call stack
+
+locals/params
+
+step over / step out
+
+Use-case 3: jump target correctness
+“I think a conditional branch goes to the wrong offset.”
+
+Needed views:
+
+p-code disassembly
+
+current instruction detail
+
+stack top / condition value
+
+target label
+
+Use-case 4: memory corruption
+“My locals get overwritten after nested calls.”
+
+Needed views:
+
+frame panel
+
+memory region map
+
+stack region detail
+
+maybe host step for interpreter bug
+
+Use-case 5: dispatch implementation bug
+“The p-code ADD handler works unless preceded by CALL.”
+
+Needed views:
+
+p-code step
+
+then drill down to host/COR24 step
+
+host registers / host PC / selected memory window
+
+This is why dual-level stepping matters.
+
+15. Extensibility for watches and breakpoints
+You asked how to make it extensible.
+
+Use an event-driven debugger core
+Your execution engine should emit events like:
+
+enum DebugEvent {
+    VmReset,
+    BeforePcodeStep { pc: u32, instr: DecodedPcodeInstr },
+    AfterPcodeStep { pc: u32, instr: DecodedPcodeInstr },
+    BeforeHostStep { pc: u32 },
+    AfterHostStep { pc: u32 },
+    MemoryWrite { addr: u32, old: u32, new: u32 },
+    StackPush { stack: StackKind, value: Value },
+    StackPop { stack: StackKind, value: Value },
+    Call { target: u32, new_frame: CallFrame },
+    Return { from: u32, to: u32 },
+    Fault { reason: VmFault },
+}
+This makes later features natural.
+
+Breakpoints later become predicates on events/state
+Examples:
+
+p-code PC == 42
+
+procedure == fib
+
+memory write to address range
+
+stack depth exceeds N
+
+call to procedure X
+
+Watches later become derived views
+Examples:
+
+show local[3]
+
+show global G
+
+show memory[0x1234]
+
+show stack top
+
+show heap usage
+
+If your debugger core already maintains explicit state snapshots and events, these are straightforward.
+
+16. Suggested data model for the UI
+A clean Yew architecture would separate:
+
+A. immutable-ish snapshot state
+What the VM looks like now.
+
+B. derived selectors
+Functions that compute:
+
+visible stack slice
+
+current procedure
+
+current frame locals
+
+current region occupancy
+
+surrounding disassembly window
+
+C. UI state
+What the user has expanded/selected:
+
+selected stack
+
+selected memory region
+
+selected disassembly line
+
+show host panel or not
+
+current stepping mode
+
+That keeps the rendering logic sane.
+
+17. A good phased plan
+Phase 1: semantic debugger only
+Build:
+
+controls
+
+current p-code instruction
+
+p-code disassembly
+
+operand stack
+
+call stack / frame view
+
+memory region map
+
+No raw host state yet except maybe a tiny status line.
+
+Phase 2: region detail
+Add:
+
+frame-aware stack rendering
+
+globals rendering
+
+heap summary
+
+selected memory region viewer
+
+Phase 3: host drill-down
+Add:
+
+COR24 PC / registers
+
+host disassembly around PC
+
+step host
+
+Phase 4: richer step control
+Add:
+
+step over
+
+step out
+
+run until next call/return/fault
+
+Phase 5: event history
+Add:
+
+last N events
+
+last memory writes
+
+last stack operations
+
+This is often more useful than watches early on.
+
+Phase 6: breakpoints and watches
+Only after the above feels solid.
+
+18. One especially useful feature: “why did this change?”
+Even without watches, you can add a very strong aid:
+
+Delta highlighting between p-code steps
+After each step, highlight:
+
+which stack entries changed
+
+which memory words changed
+
+which frame fields changed
+
+how p-code PC changed
+
+This can be presented as:
+
+Step 41 -> 42
+- data stack: pop 2, pop 3, push 5
+- frame unchanged
+- globals unchanged
+- pcode_pc: 0040 -> 0041
+This is incredibly useful and much cheaper than a full reverse debugger.
+
+19. What likely matters less at first
+Unless your VM really depends on them, I would postpone:
+
+cycle counts
+
+host instruction counts per p-code op
+
+pipeline timing
+
+cache-like effects
+
+raw binary sections of the host interpreter
+
+complex heap graph visualizations
+
+expression evaluators for watch windows
+
+source-level AST rendering
+
+You can add these later, but they are not the shortest path to a useful p-code debugger.
+
+20. My recommendation: the initial concrete screen
+If I were building v1, I would implement exactly this:
+
+Top
+Reset | Run | Pause | Step P | Step H | Over | Out
+
+status: Running / Paused / Faulted
+
+p-code PC, current proc, current frame depth
+
+Left pane
+P-code Disassembly
+
+20-50 instructions around PC
+
+current line highlighted
+
+labels shown
+
+target lines lightly marked
+
+Middle pane top
+Current Instruction
+
+opcode
+
+operands
+
+short semantic description
+
+stack effect
+
+Middle pane middle
+Operand Stack
+
+top first
+
+changed values highlighted
+
+Middle pane bottom
+Call Frame
+
+proc name
+
+params
+
+locals
+
+return addr
+
+links
+
+Right pane top
+Memory Regions
+
+segmented bar
+
+usage stats
+
+Right pane bottom
+Region Detail
+
+selected region rendered semantically
+
+Bottom collapsed drawer
+Host / COR24
+
+PC
+
+SP/FP
+
+a few regs
+
+nearby host disassembly
+
+That is enough to be genuinely useful.
+
+21. Short answer to “what do I not show?”
+Do not lead with:
+
+full machine-state complexity
+
+giant raw hex memory dumps
+
+microarchitectural detail
+
+all registers
+
+watch/breakpoint UI shells before the stepping model is correct
+
+Do show:
+
+p-code PC
+
+decoded p-code instruction
+
+semantic stacks
+
+call frame
+
+memory regions
+
+deltas after each step
+
+optional low-level drill-down
+
+22. Design mantra
+A good debugger for a VM answers these questions quickly:
+
+What p-code instruction am I on?
+
+What abstract machine state does it see?
+
+What changed when I stepped it?
+
+Where am I in procedure/frame/memory terms?
+
+Can I drill down to the COR24 implementation when needed?
+
+If your UI answers those five well, it will already be strong.
+
+23. Best next artifact to create
+The next thing worth writing is a short design doc with sections like:
+
+goals
+
+non-goals
+
+abstraction layers
+
+debugger state model
+
+event model
+
+initial screen layout
+
+step semantics
+
+extensibility points
+
+After that, define the Rust structs for:
+
+VmDebugState
+
+HostDebugState
+
+DebugEvent
+
+MemoryRegion
+
+CallFrame
+
+DecodedPcodeInstr
+
+Then build the UI against mocked JSON snapshots before wiring it to the live VM.
+
+I can draft that design doc and the initial Rust/Yew type definitions next.
+
+
+
+
+

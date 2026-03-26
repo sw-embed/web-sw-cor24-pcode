@@ -1,0 +1,1 @@
+Project initialized with CLAUDE.md, research docs, and saga plan
