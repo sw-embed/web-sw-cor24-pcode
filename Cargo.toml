@@ -11,12 +11,17 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cor24-emulator = { path = "../../sw-embed/cor24-rs", default-features = false }
+pa24r = { path = "../pa24r" }
 cor24-isa = { path = "../../sw-embed/cor24-rs/isa", features = ["serde"] }
 yew = { version = "0.21", features = ["csr"] }
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["console", "HtmlTextAreaElement", "HtmlInputElement", "HtmlSelectElement", "HtmlElement", "KeyboardEvent"] }
 gloo = "0.11"
 console_error_panic_hook = "0.1"
+
+[build-dependencies]
+pa24r = { path = "../pa24r" }
+cor24-emulator = { path = "../../sw-embed/cor24-rs", default-features = false }
 
 [profile.release]
 opt-level = "z"

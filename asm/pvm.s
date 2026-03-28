@@ -57,8 +57,9 @@ _start:
     la r0, heap_seg
     sw r0, 15(fp)
 
-    ; code = code segment base
-    la r0, code_seg
+    ; code = indirect via code_ptr (patchable for external .p24 loading)
+    la r0, code_ptr
+    lw r0, 0(r0)
     sw r0, 18(fp)
 
     ; status = 0 (running)
@@ -2020,6 +2021,13 @@ vm_state:
 ; 14: sys 0          96, 0         ; HALT (should not reach here)
 ;
 ; Other trap tests (change bytecode to test each):
+; code_ptr — indirection for code segment base address.
+; Default: points to built-in code_seg.
+; For external .p24: patch this word to the load address (e.g., 0x010000)
+; using --load-binary or --patch before execution starts.
+code_ptr:
+    .word code_seg
+
 ;   DIV_ZERO:       push_s 1, push_s 0, div  → TRAP 1
 ;   STACK_OVERFLOW: (fill stack past limit)   → TRAP 2
 ;   STACK_UNDERFLOW: drop (on empty stack)    → TRAP 3

@@ -1,9 +1,9 @@
 //! P-code VM debugger component — two-level debugging with p-code semantic
 //! layer (primary) and COR24 host implementation layer (secondary drill-down).
 
-use crate::config::VmConfig;
+use crate::config;
 use crate::demos::DEMOS;
-use cor24_emulator::{Assembler, EmulatorCore, StopReason};
+use cor24_emulator::{EmulatorCore, StopReason};
 use gloo::timers::callback::Timeout;
 use std::collections::{HashMap, VecDeque};
 use web_sys::HtmlInputElement;
@@ -193,16 +193,30 @@ pub enum Msg {
     InputKeyDown(KeyboardEvent),
 }
 
+/// Return the size in bytes of a p-code instruction given its opcode byte.
+fn pcode_instr_size(op: u8) -> u32 {
+    match op {
+        // IMM24 (4 bytes): push, jmp, jz, jnz, call, loadg, storeg, addrg
+        0x01 | 0x30 | 0x31 | 0x32 | 0x33 | 0x54 | 0x55 | 0x56 => 4,
+        // IMM8 (2 bytes): push_s, trap, enter, loadl, storel, loada, storea, addrl, sys, ret, ret_v
+        0x02 | 0x36 | 0x40 | 0x42 | 0x43 | 0x44 | 0x45 | 0x57 | 0x60 | 0x34 | 0x35 => 2,
+        // D8_O8 (3 bytes): loadn, storen
+        0x58 | 0x59 => 3,
+        // D8_A24 (5 bytes): calln
+        0x5A => 5,
+        // NONE (1 byte): everything else
+        _ => 1,
+    }
+}
+
 pub struct Debugger {
     emulator: EmulatorCore,
-    config: VmConfig,
     output: String,
     running: bool,
     halted: bool,
     _tick_handle: Option<Timeout>,
     prev_regs: [u32; 8],
     prev_pc: u32,
-    labels: HashMap<String, u32>,
     reverse_labels: HashMap<u32, String>,
     program_end: u32,
     /// Address of vm_state struct in emulator memory.
@@ -231,6 +245,8 @@ pub struct Debugger {
     hex_region: HexRegion,
     /// Currently selected demo index.
     selected_demo: Option<usize>,
+    /// Pending code_base address to patch after pvm.s init.
+    pending_code_base: Option<u32>,
     /// UART input field text.
     input: String,
     /// UART receive queue (bytes waiting to be fed to emulator).
@@ -238,38 +254,23 @@ pub struct Debugger {
 }
 
 impl Debugger {
-    fn load_binary(&mut self) {
-        let mut asm = Assembler::new();
-        let result = asm.assemble(self.config.assembly());
+    /// Load the pre-assembled pvm.s binary into the emulator.
+    /// Called once on Init. No COR24 assembler runs in WASM.
+    fn load_vm_binary(&mut self) {
+        let binary = config::PVM_BINARY;
 
-        if !result.errors.is_empty() {
-            self.output = "Assembly errors:\n".to_string();
-            for e in &result.errors {
-                self.output.push_str(e);
-                self.output.push('\n');
-            }
-            return;
-        }
-
-        self.labels = result.labels.clone();
-        self.reverse_labels = result
-            .labels
-            .iter()
-            .map(|(name, &addr)| (addr, name.clone()))
-            .collect();
-        self.program_end = result.bytes.len() as u32;
-
-        // Resolve key VM addresses from labels.
-        self.vm_state_addr = result.labels.get("vm_state").copied().unwrap_or(0);
-        self.eval_stack_base = result.labels.get("eval_stack").copied().unwrap_or(0);
-        self.call_stack_base = result.labels.get("call_stack").copied().unwrap_or(0);
-        self.code_seg_addr = result.labels.get("code_seg").copied().unwrap_or(0);
-        self.vm_loop_addr = result.labels.get("vm_loop").copied().unwrap_or(0);
+        // Resolve key VM addresses from build-time labels.
+        self.vm_state_addr = config::label_addr("vm_state");
+        self.eval_stack_base = config::label_addr("eval_stack");
+        self.call_stack_base = config::label_addr("call_stack");
+        self.code_seg_addr = config::label_addr("code_seg");
+        self.vm_loop_addr = config::label_addr("vm_loop");
+        self.program_end = binary.len() as u32;
 
         self.emulator.hard_reset();
         self.emulator.set_uart_tx_busy_cycles(0);
-        self.emulator.load_program(0, &result.bytes);
-        self.emulator.load_program_extent(result.bytes.len() as u32);
+        self.emulator.load_program(0, binary);
+        self.emulator.load_program_extent(binary.len() as u32);
         self.emulator.set_pc(0);
         self.output.clear();
         self.halted = false;
@@ -280,6 +281,7 @@ impl Debugger {
         self.prev_pcode_state = None;
         self.instruction_count = 0;
 
+        self.pending_code_base = None;
         // Start paused — debugger mode.
         self.running = false;
         self.emulator.pause();
@@ -637,26 +639,102 @@ impl Debugger {
     }
 
     /// Feed one byte from the UART RX queue if the UART is ready.
-    fn feed_uart_byte(&mut self) {
-        if self.uart_rx_queue.is_empty() {
-            return;
-        }
-        // Check UART status: bit 0 = RX ready (should be 0 = not ready)
-        let status = self.emulator.read_byte(0xFF0101);
-        if status & 0x01 == 0
-            && let Some(byte) = self.uart_rx_queue.pop_front()
-        {
-            self.emulator.send_uart_byte(byte);
+    /// Feed as many bytes as possible from the UART RX queue while the
+    /// UART is ready to accept them.  Draining per tick avoids wasting
+    /// millions of emulated instructions polling in tight UART-wait loops.
+    fn feed_uart_bytes(&mut self) {
+        while !self.uart_rx_queue.is_empty() {
+            let status = self.emulator.read_byte(0xFF0101);
+            if status & 0x01 != 0 {
+                break; // RX buffer full, try again next tick
+            }
+            if let Some(byte) = self.uart_rx_queue.pop_front() {
+                self.emulator.send_uart_byte(byte);
+            }
         }
     }
 
-    /// Patch code_seg with demo bytecodes.
-    fn patch_demo_bytecode(&mut self, bytecode: &[u8]) {
-        if self.code_seg_addr == 0 {
-            return;
+    /// Load a pre-assembled p-code image into emulator memory.
+    /// Places code+data at a safe address (0x010000), then relocates
+    /// data references in `push` instructions to absolute addresses
+    /// (pvm.s loadb/load/store use absolute addresses, not code-relative).
+    fn load_p24_image(&mut self, image: &pa24r::LoadedImage) {
+        let load_addr = 0x010000_u32;
+        let code_size = image.code.len() as u32;
+        let total = code_size + image.data.len() as u32;
+
+        // Write code + data contiguously
+        for (i, &b) in image.code.iter().chain(image.data.iter()).enumerate() {
+            self.emulator.write_byte(load_addr + i as u32, b);
         }
-        for (i, &b) in bytecode.iter().enumerate() {
-            self.emulator.write_byte(self.code_seg_addr + i as u32, b);
+
+        // Relocate: scan for `push` (opcode 0x01, IMM24) instructions
+        // whose operand points into the data segment. These need to
+        // become absolute addresses (load_addr + offset).
+        let mut i: u32 = 0;
+        while i < code_size {
+            let op = self.emulator.read_byte(load_addr + i);
+            let size = pcode_instr_size(op);
+            if op == 0x01 && i + 4 <= code_size {
+                // push IMM24: read the 3-byte operand
+                let lo = self.emulator.read_byte(load_addr + i + 1) as u32;
+                let mid = self.emulator.read_byte(load_addr + i + 2) as u32;
+                let hi = self.emulator.read_byte(load_addr + i + 3) as u32;
+                let val = lo | (mid << 8) | (hi << 16);
+                // If operand points into data segment, relocate
+                if val >= code_size && val < total {
+                    let abs = val + load_addr;
+                    self.emulator.write_byte(load_addr + i + 1, abs as u8);
+                    self.emulator
+                        .write_byte(load_addr + i + 2, (abs >> 8) as u8);
+                    self.emulator
+                        .write_byte(load_addr + i + 3, (abs >> 16) as u8);
+                }
+            }
+            i += size;
+        }
+        self.pending_code_base = Some(load_addr);
+    }
+
+    /// If a demo was loaded, run pvm.s init then set up the VM to
+    /// execute the demo's p-code from the load address.
+    fn apply_pending_code_base(&mut self) {
+        if let Some(load_addr) = self.pending_code_base.take() {
+            // Write "sys halt" at code_seg so pvm.s init halts after boot
+            let code_seg = self.code_seg_addr;
+            self.emulator.write_byte(code_seg, 0x60); // sys
+            self.emulator.write_byte(code_seg + 1, 0x00); // halt
+
+            // Run pvm.s init — boots, enters vm_loop, hits sys halt
+            self.emulator.resume();
+            self.emulator.run_batch(10_000);
+
+            // Discard boot output (PVM banner)
+            self.emulator.clear_uart_output();
+            self.output.clear();
+
+            // Soft reset: clears halted flag, preserves all memory
+            self.emulator.reset();
+            self.emulator.set_uart_tx_busy_cycles(0);
+
+            // Set COR24 PC to vm_loop (skip init), fp to vm_state
+            self.emulator.set_pc(self.vm_loop_addr);
+            self.emulator.set_reg(3, self.vm_state_addr); // fp
+
+            // Patch vm_state for our demo
+            let base = self.vm_state_addr;
+            // code_base = load_addr
+            self.emulator.write_byte(base + 18, load_addr as u8);
+            self.emulator.write_byte(base + 19, (load_addr >> 8) as u8);
+            self.emulator.write_byte(base + 20, (load_addr >> 16) as u8);
+            // pc = 0
+            self.emulator.write_byte(base, 0);
+            self.emulator.write_byte(base + 1, 0);
+            self.emulator.write_byte(base + 2, 0);
+            // status = 0 (running)
+            self.emulator.write_byte(base + 21, 0);
+            self.emulator.write_byte(base + 22, 0);
+            self.emulator.write_byte(base + 23, 0);
         }
     }
 
@@ -688,14 +766,12 @@ impl Component for Debugger {
         emulator.set_uart_tx_busy_cycles(0);
         Self {
             emulator,
-            config: VmConfig::default(),
             output: String::new(),
             running: false,
             halted: false,
             _tick_handle: None,
             prev_regs: [0; 8],
             prev_pc: 0,
-            labels: HashMap::new(),
             reverse_labels: HashMap::new(),
             program_end: 0,
             vm_state_addr: 0,
@@ -711,6 +787,7 @@ impl Component for Debugger {
             show_hex_viewer: false,
             hex_region: HexRegion::Code,
             selected_demo: None,
+            pending_code_base: None,
             input: String::new(),
             uart_rx_queue: VecDeque::new(),
         }
@@ -719,7 +796,7 @@ impl Component for Debugger {
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Msg::Init => {
-                self.load_binary();
+                self.load_vm_binary();
                 true
             }
             Msg::Tick => {
@@ -727,7 +804,7 @@ impl Component for Debugger {
                     return false;
                 }
 
-                self.feed_uart_byte();
+                self.feed_uart_bytes();
                 self.save_prev_state();
                 let result = self.emulator.run_batch(BATCH_SIZE);
                 self.instruction_count += result.instructions_run;
@@ -744,13 +821,14 @@ impl Component for Debugger {
                 self._tick_handle = None;
                 self.uart_rx_queue.clear();
                 self.selected_demo = None;
-                self.load_binary();
+                self.load_vm_binary();
                 true
             }
             Msg::StepPcode => {
                 if self.halted {
                     return false;
                 }
+                self.apply_pending_code_base();
                 self.save_prev_state();
                 let pstate = self.read_pcode_state();
 
@@ -821,6 +899,7 @@ impl Component for Debugger {
                 }
                 self.running = !self.running;
                 if self.running {
+                    self.apply_pending_code_base();
                     self.emulator.resume();
                     self.schedule_tick(ctx);
                 } else {
@@ -833,6 +912,7 @@ impl Component for Debugger {
                 if self.halted {
                     return false;
                 }
+                self.apply_pending_code_base();
                 self.save_prev_state();
                 let pstate = self.read_pcode_state();
                 if pstate.code_base == 0 {
@@ -874,6 +954,7 @@ impl Component for Debugger {
                 if self.halted {
                     return false;
                 }
+                self.apply_pending_code_base();
                 self.save_prev_state();
                 let pstate = self.read_pcode_state();
                 if pstate.code_base == 0 {
@@ -912,9 +993,18 @@ impl Component for Debugger {
                     self.running = false;
                     self._tick_handle = None;
                     self.uart_rx_queue.clear();
-                    self.load_binary();
-                    // Patch code_seg with demo bytecodes
-                    self.patch_demo_bytecode(demo.bytecode);
+                    // Soft reset: preserves pvm.s code in memory
+                    self.load_vm_binary();
+                    // Load pre-assembled .p24 binary into code_seg
+                    match pa24r::load_p24(demo.p24) {
+                        Ok(image) => {
+                            self.load_p24_image(&image);
+                            // Stay paused — user clicks Run to start
+                        }
+                        Err(e) => {
+                            self.output = format!("Load error: {e}");
+                        }
+                    }
                 }
                 true
             }

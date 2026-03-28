@@ -43,6 +43,8 @@ pub fn app() -> Html {
                 <span class="footer-sep">{"\u{00b7}"}</span>
                 <a href="https://makerlisp.com" target="_blank">{"COR24-TB"}</a>
                 <span class="footer-sep">{"\u{00b7}"}</span>
+                <a href="https://github.com/softwarewrighter/web-dv24r/blob/main/CHANGES.md" target="_blank">{"Changes"}</a>
+                <span class="footer-sep">{"\u{00b7}"}</span>
                 <span>{env!("BUILD_SHA")}</span>
                 <span class="footer-sep">{"\u{00b7}"}</span>
                 <span>{env!("BUILD_HOST")}</span>

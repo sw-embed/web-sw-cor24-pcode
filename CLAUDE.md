@@ -47,9 +47,22 @@ Do NOT skip any of these steps. The next session depends on your trajectory reco
 
 Browser-based p-code VM debugger running the pv24a VM on the cor24-rs emulator via WASM. Two-level debugging: p-code semantic level (primary) and COR24 host implementation level (secondary drill-down).
 
+## Multi-Agent Coordination (Wiki)
+
+This project coordinates with other agents via a shared wiki. See `docs/agent-cas-wiki.md` for the full API reference and CAS protocol.
+
+- **Wiki server:** `http://localhost:7402` (git backend)
+- **Key pages:** [[AgentToAgentRequests]], [[AgentStatus]], [[P24Toolchain]], [[COR24Architecture]], [[WebDV24R]]
+- **Our role:** web-dv24r is the top-level integration point and project coordinator. We drive the toolchain forward by tracking requests, unblocking other agents, and validating end-to-end.
+- **On session start:** Read [[AgentToAgentRequests]] and [[AgentStatus]] to check for new requests or updates from other agents. Update our status.
+
 ## Related Projects
 
 - `~/github/sw-vibe-coding/pv24a` -- P-code VM and p-code assembler (COR24 assembly, `pvm.s`)
+- `~/github/softwarewrighter/pa24r` -- P-code assembler (Rust, .spc → .p24)
+- `~/github/softwarewrighter/pl24r` -- P-code text-level linker (Rust)
+- `~/github/softwarewrighter/p24p` -- Pascal compiler (C, compiled by tc24r)
+- `~/github/softwarewrighter/pr24p` -- Pascal runtime library (.spc sources)
 - `~/github/sw-vibe-coding/tc24r` -- COR24 C compiler (Rust)
 - `~/github/sw-embed/cor24-rs` -- COR24 assembler and emulator (Rust)
 - `~/github/sw-vibe-coding/web-tf24a` -- Forth debugger (pattern reference for debugger UI)
@@ -65,6 +78,8 @@ Browser-based p-code VM debugger running the pv24a VM on the cor24-rs emulator v
 
 - `docs/research.txt` -- Deep research on p-code VM design, memory model, calling conventions, instruction set, p-code assembler design, and Pascal compiler architecture.
 - `docs/debugger.txt` -- Debugger UI design: panels, state model, stepping semantics, what to show/hide, extensibility for watches and breakpoints.
+- `docs/linking-loading.md` -- Toolchain architecture: pipeline, .p24 format, loader design, dependency architecture, debug info plan.
+- `docs/agent-cas-wiki.md` -- Wiki API for multi-agent coordination (CAS protocol, endpoints, workflow).
 
 ## Build
 
@@ -92,12 +107,14 @@ cargo fmt --all                # Format
 - Batch execution loop (50K instructions per tick) prevents browser blocking
 - UART I/O bridges user input to the VM running in the emulator
 
-## Key Files (to be created)
+## Key Files
 
-- `src/debugger.rs` -- Main debugger component (emulator loop, UI panels)
-- `src/config.rs` -- VM configuration (tier/mode selection)
-- `src/demos.rs` -- Demo registry (embedded .spc/.pasm files)
-- `asm/` -- VM assembly files (include_str!'d from pv24a)
+- `src/debugger.rs` -- Main debugger component (emulator loop, UI panels, all state)
+- `src/config.rs` -- VM configuration (currently loads pvmasm.s)
+- `src/demos.rs` -- Demo registry (embedded .spc files fed via UART)
+- `asm/pvm.s` -- P-code VM only (from pv24a)
+- `asm/pvmasm.s` -- Integrated assembler+VM (from pv24a, currently active)
+- `demos/*.spc` -- Demo p-code programs (hello, arith, globals, countdown)
 - `index.html` -- Entry point with Catppuccin Mocha theme
 - `src/debugger.css` -- Debugger panel styling
 - `build.rs` -- Build script (BUILD_SHA, BUILD_HOST, BUILD_TIMESTAMP)
