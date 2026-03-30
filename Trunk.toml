@@ -1,5 +1,6 @@
 [build]
 dist = "dist"
+public_url = "/web-sw-cor24-pcode/"
 
 [serve]
 port = 9198

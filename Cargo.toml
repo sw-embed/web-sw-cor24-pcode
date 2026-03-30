@@ -1,5 +1,5 @@
 [package]
-name = "web-dv24r"
+name = "web-sw-cor24-pcode"
 version = "0.1.0"
 edition = "2024"
 authors = ["Michael A Wright"]
@@ -10,9 +10,9 @@ description = "Browser-based p-code VM debugger on COR24"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-cor24-emulator = { path = "../../sw-embed/cor24-rs", default-features = false }
-pa24r = { path = "../pa24r" }
-cor24-isa = { path = "../../sw-embed/cor24-rs/isa", features = ["serde"] }
+cor24-emulator = { path = "../sw-cor24-emulator", default-features = false }
+pa24r = { path = "../sw-cor24-pcode/assembler" }
+cor24-isa = { path = "../sw-cor24-emulator/isa", features = ["serde"] }
 yew = { version = "0.21", features = ["csr"] }
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["console", "HtmlTextAreaElement", "HtmlInputElement", "HtmlSelectElement", "HtmlElement", "KeyboardEvent"] }
@@ -20,8 +20,8 @@ gloo = "0.11"
 console_error_panic_hook = "0.1"
 
 [build-dependencies]
-pa24r = { path = "../pa24r" }
-cor24-emulator = { path = "../../sw-embed/cor24-rs", default-features = false }
+pa24r = { path = "../sw-cor24-pcode/assembler" }
+cor24-emulator = { path = "../sw-cor24-emulator", default-features = false }
 
 [profile.release]
 opt-level = "z"

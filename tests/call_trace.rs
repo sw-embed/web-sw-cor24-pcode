@@ -21,10 +21,10 @@ const TINY_CALL: &str = "\
 ";
 
 fn run_fast(source: &str) -> String {
-    let pvm = web_dv24r::config::PVM_BINARY;
-    let vm_state = web_dv24r::config::label_addr("vm_state");
-    let code_seg = web_dv24r::config::label_addr("code_seg");
-    let vm_loop = web_dv24r::config::label_addr("vm_loop");
+    let pvm = web_sw_cor24_pcode::config::PVM_BINARY;
+    let vm_state = web_sw_cor24_pcode::config::label_addr("vm_state");
+    let code_seg = web_sw_cor24_pcode::config::label_addr("code_seg");
+    let vm_loop = web_sw_cor24_pcode::config::label_addr("vm_loop");
 
     let result = pa24r::assemble(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);

@@ -10,7 +10,7 @@ pub fn app() -> Html {
     html! {
         <>
             // GitHub corner
-            <a href="https://github.com/softwarewrighter/web-dv24r" class="github-corner"
+            <a href="https://github.com/sw-embed/web-sw-cor24-pcode" class="github-corner"
                aria-label="View source on GitHub" target="_blank">
                 <svg width="80" height="80" viewBox="0 0 250 250" aria-hidden="true">
                     <path d="M0,0 L115,115 L130,115 L142,142 L250,250 L250,0 Z" />
@@ -43,7 +43,7 @@ pub fn app() -> Html {
                 <span class="footer-sep">{"\u{00b7}"}</span>
                 <a href="https://makerlisp.com" target="_blank">{"COR24-TB"}</a>
                 <span class="footer-sep">{"\u{00b7}"}</span>
-                <a href="https://github.com/softwarewrighter/web-dv24r/blob/main/CHANGES.md" target="_blank">{"Changes"}</a>
+                <a href="https://github.com/sw-embed/web-sw-cor24-pcode/blob/main/CHANGES.md" target="_blank">{"Changes"}</a>
                 <span class="footer-sep">{"\u{00b7}"}</span>
                 <span>{env!("BUILD_SHA")}</span>
                 <span class="footer-sep">{"\u{00b7}"}</span>

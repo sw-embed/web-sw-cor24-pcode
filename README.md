@@ -1,12 +1,12 @@
-# web-dv24r
+# web-sw-cor24-pcode
 
-Browser-based p-code VM debugger for the [pv24a](https://github.com/softwarewrighter/pv24a) virtual machine running on the [COR24](https://github.com/sw-embed/cor24-rs) emulator via WASM.
+Browser-based p-code VM debugger for the [sw-cor24-pcode](https://github.com/sw-embed/sw-cor24-pcode) virtual machine running on the [COR24](https://github.com/sw-embed/sw-cor24-emulator) emulator via WASM.
 
-[Live Demo](https://softwarewrighter.github.io/web-dv24r/)
+[Live Demo](https://sw-embed.github.io/web-sw-cor24-pcode/)
 
 ## Overview
 
-web-dv24r provides two-level debugging for p-code programs:
+web-sw-cor24-pcode provides two-level debugging for p-code programs:
 
 - **P-code semantic level** (primary) -- step through p-code instructions, inspect the eval stack, call frames, and VM-managed memory regions.
 - **COR24 host level** (secondary drill-down) -- inspect the underlying COR24 registers, disassembly, and machine state when you need to debug the VM implementation itself.
@@ -22,7 +22,7 @@ Built with Rust, Yew 0.21, and Trunk. Runs entirely in the browser as a WASM app
 - Step P-Code / Step Over / Step Out / Step Host / Run
 - Demo selector with pre-assembled .p24 programs (Hello World, Arithmetic, Globals, Countdown)
 - UART I/O (input field + output panel)
-- Fast .p24 loading via [pa24r](https://github.com/softwarewrighter/pa24r) (4,447x speedup over in-emulator assembly)
+- Fast .p24 loading via p-code assembler (4,447x speedup over in-emulator assembly)
 
 ## Run a Pascal Program
 
@@ -50,16 +50,10 @@ cargo fmt --all
 
 ## Related Projects
 
-- [pv24a](https://github.com/softwarewrighter/pv24a) -- P-code VM and p-code assembler (COR24 assembly)
-- [pa24r](https://github.com/softwarewrighter/pa24r) -- P-code assembler (Rust, .spc to .p24)
-- [pl24r](https://github.com/softwarewrighter/pl24r) -- P-code text-level linker (Rust)
-- [p24p](https://github.com/softwarewrighter/p24p) -- Pascal compiler (C, compiled by tc24r)
-- [pr24p](https://github.com/softwarewrighter/pr24p) -- Pascal runtime library (.spc sources)
-- [cor24-rs](https://github.com/sw-embed/cor24-rs) -- COR24 assembler and emulator
-- [web-p24c](https://github.com/softwarewrighter/web-p24c) -- Pascal compiler IDE (browser)
-- [web-tf24a](https://github.com/sw-vibe-coding/web-tf24a) -- Forth debugger
-- [web-tml24c](https://github.com/sw-vibe-coding/web-tml24c) -- Lisp REPL
-- [web-tc24r](https://github.com/sw-vibe-coding/web-tc24r) -- C compiler UI
+- [sw-cor24-pcode](https://github.com/sw-embed/sw-cor24-pcode) -- P-code VM, assembler, and linker (Rust workspace)
+- [sw-cor24-emulator](https://github.com/sw-embed/sw-cor24-emulator) -- COR24 assembler and emulator
+- [sw-cor24-assembler](https://github.com/sw-embed/sw-cor24-assembler) -- COR24 assembler library
+- [web-sw-cor24-assembler](https://github.com/sw-embed/web-sw-cor24-assembler) -- COR24 assembly IDE (browser)
 - [COR24-TB](https://makerlisp.com) -- COR24 FPGA board
 
 ## License

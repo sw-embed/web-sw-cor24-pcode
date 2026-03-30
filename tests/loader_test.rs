@@ -2,7 +2,7 @@ use cor24_emulator::EmulatorCore;
 
 #[test]
 fn test_hello_world_loads_and_runs() {
-    let pvm_binary = web_dv24r::config::PVM_BINARY;
+    let pvm_binary = web_sw_cor24_pcode::config::PVM_BINARY;
     let hello_p24 = include_bytes!(concat!(env!("OUT_DIR"), "/hello.p24"));
     let image = pa24r::load_p24(hello_p24).unwrap();
 
@@ -49,7 +49,7 @@ fn test_hello_world_loads_and_runs() {
     }
 
     // Put halt at code_seg so pvm.s init halts cleanly
-    let code_seg = web_dv24r::config::label_addr("code_seg");
+    let code_seg = web_sw_cor24_pcode::config::label_addr("code_seg");
     emu.write_byte(code_seg, 0x60); // sys
     emu.write_byte(code_seg + 1, 0x00); // halt
 
@@ -64,8 +64,8 @@ fn test_hello_world_loads_and_runs() {
     emu.clear_uart_output();
 
     // Set up for demo execution
-    let vm_state = web_dv24r::config::label_addr("vm_state");
-    let vm_loop = web_dv24r::config::label_addr("vm_loop");
+    let vm_state = web_sw_cor24_pcode::config::label_addr("vm_state");
+    let vm_loop = web_sw_cor24_pcode::config::label_addr("vm_loop");
     emu.set_pc(vm_loop);
     emu.set_reg(3, vm_state); // fp = &vm_state
 

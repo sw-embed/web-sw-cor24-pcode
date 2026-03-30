@@ -1,5 +1,12 @@
 # Changes
 
+## 2026-03-29
+
+- Forked from softwarewrighter/web-dv24r to sw-embed/web-sw-cor24-pcode
+- Updated path dependencies to ../sw-cor24-pcode and ../sw-cor24-emulator
+- Updated Trunk.toml public_url for new repo name
+- Updated package name, GitHub links, and documentation
+
 ## 2026-03-26
 
 - **9f25c04** feat: add demo registry with 6 p-code programs and UART input
