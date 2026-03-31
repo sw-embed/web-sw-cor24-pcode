@@ -14,7 +14,7 @@ All COR24 repos live under `~/github/sw-embed/` as siblings:
 
 - `sw-cor24-pcode` -- P-code VM, assembler, and linker (Rust workspace)
 - `sw-cor24-emulator` -- COR24 assembler and emulator (Rust)
-- `sw-cor24-assembler` -- COR24 assembler library
+- `sw-cor24-x-assembler` -- COR24 assembler library
 - `web-sw-cor24-assembler` -- COR24 assembly IDE (browser)
 - `sw-cor24-rust` -- Rust-to-COR24 pipeline
 

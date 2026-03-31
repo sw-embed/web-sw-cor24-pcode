@@ -52,7 +52,7 @@ cargo fmt --all
 
 - [sw-cor24-pcode](https://github.com/sw-embed/sw-cor24-pcode) -- P-code VM, assembler, and linker (Rust workspace)
 - [sw-cor24-emulator](https://github.com/sw-embed/sw-cor24-emulator) -- COR24 assembler and emulator
-- [sw-cor24-assembler](https://github.com/sw-embed/sw-cor24-assembler) -- COR24 assembler library
+- [sw-cor24-x-assembler](https://github.com/sw-embed/sw-cor24-x-assembler) -- COR24 assembler library
 - [web-sw-cor24-assembler](https://github.com/sw-embed/web-sw-cor24-assembler) -- COR24 assembly IDE (browser)
 - [COR24-TB](https://makerlisp.com) -- COR24 FPGA board
 
