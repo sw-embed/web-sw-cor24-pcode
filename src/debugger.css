@@ -206,11 +206,28 @@
     padding: 1px 4px;
     border-radius: 2px;
     white-space: nowrap;
+    cursor: pointer;
+}
+
+.disasm-line:hover {
+    background: var(--surface0);
 }
 
 .disasm-line.current {
     background: var(--surface0);
     font-weight: 600;
+}
+
+.disasm-line.has-bp .disasm-marker {
+    color: var(--red);
+}
+
+.disasm-line.has-bp {
+    background: color-mix(in srgb, var(--red) 15%, transparent);
+}
+
+.disasm-line.current.has-bp {
+    background: color-mix(in srgb, var(--red) 30%, var(--surface0));
 }
 
 .disasm-marker {

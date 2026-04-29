@@ -32,4 +32,19 @@ pub const DEMOS: &[Demo] = &[
         description: "Loop counting down from 5 with procedure call",
         p24: include_bytes!(concat!(env!("OUT_DIR"), "/t04-loop.p24")),
     },
+    Demo {
+        name: "MEMCPY (new)",
+        description: "MEMCPY opcode — copies 3 bytes then prints ABCABC",
+        p24: include_bytes!(concat!(env!("OUT_DIR"), "/t11-memcpy.p24")),
+    },
+    Demo {
+        name: "MEMCMP (new)",
+        description: "MEMCMP opcode — equal / less-than / greater-than / zero-length",
+        p24: include_bytes!(concat!(env!("OUT_DIR"), "/t14-memcmp.p24")),
+    },
+    Demo {
+        name: "JMP_IND (new)",
+        description: "JMP_IND opcode — computed indirect jumps via dispatch addresses",
+        p24: include_bytes!(concat!(env!("OUT_DIR"), "/t15-jmp_ind.p24")),
+    },
 ];

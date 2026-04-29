@@ -12,7 +12,7 @@
 ; UART: data at -65280 (0xFF0100), status at -65279 (0xFF0101)
 ;   TX busy = status bit 7 (sign bit via lb sign-extend)
 ;   RX ready = status bit 0
-; LED: port at -65024 (0xFF0200)
+; LED/Switch: port at -65536 (0xFF0000), write bit 0 = LED D2, read bit 0 = button S2
 ;
 ; COR24 ISA notes:
 ;   lbu = load byte zero-extend, lb = load byte sign-extend
@@ -60,7 +60,9 @@ _start:
     ; code = indirect via code_ptr (patchable for external .p24 loading)
     la r0, code_ptr
     lw r0, 0(r0)
-    sw r0, 18(fp)
+    ; r0 = address pointed to by code_ptr
+    ; Save it — we'll check for .p24m magic
+    push r0
 
     ; status = 0 (running)
     lc r0, 0
@@ -70,18 +72,361 @@ _start:
     lc r0, 0
     sw r0, 24(fp)
 
+    ; irt_base = 0 (default: no IRT)
+    lc r0, 0
+    sw r0, 27(fp)
+
+    ; unit_count = 0
+    lc r0, 0
+    sw r0, 30(fp)
+
+    ; current_unit = 0
+    lc r0, 0
+    sw r0, 33(fp)
+
+    ; unit_table_ptr = 0
+    lc r0, 0
+    sw r0, 36(fp)
+
+    ; p24m_base = 0
+    lc r0, 0
+    sw r0, 39(fp)
+
     ; Print boot message
     la r0, msg_boot
     la r2, uart_puts
     jal r1, (r2)
 
-    ; Enter VM main loop
+    ; Check if code_ptr points to a .p24m image
+    ; Magic bytes: 0x50 0x32 0x34 0x4D ("P24M")
+    pop r0
+    ; r0 = load address
+    push r0                  ; save load_addr
+    push r0                  ; save again for byte reads
+    lbu r0, 0(r0)
+    lc r2, 0x50              ; 'P'
+    ceq r0, r2
+    brf init_raw_code_pop
+    pop r0
+    push r0
+    lbu r0, 1(r0)
+    lc r2, 0x32              ; '2'
+    ceq r0, r2
+    brf init_raw_code_pop
+    pop r0
+    push r0
+    lbu r0, 2(r0)
+    lc r2, 0x34              ; '4'
+    ceq r0, r2
+    brf init_raw_code_pop
+    pop r0
+    push r0
+    lbu r0, 3(r0)
+    lc r2, 0x4D              ; 'M'
+    ceq r0, r2
+    brf init_raw_code_pop
+    pop r0                   ; discard extra copy
+    la r0, init_p24m
+    jmp (r0)
+
+init_raw_code_pop:
+    pop r0                   ; discard extra load_addr copy
+    la r0, init_raw_code
+    jmp (r0)
+
+    ; ── .p24m detected: parse header ──
+init_p24m:
+    ; r0 = base address of .p24m image
+    ; Header layout:
+    ;   [0..4]  magic "P24M"
+    ;   [4]     version
+    ;   [5..8]  entry_point (LE24)
+    ;   [8]     unit_count
+    ;   [9..12] total_code (LE24)
+    ;   [12..15] total_globals (LE24)
+    ;   [15..18] unit_table_off (LE24)
+    ;   [18..21] irt_off (LE24)
+    ;   [21..24] code_off (LE24)
+    ;   [24..27] globals_off (LE24)
+    pop r0                   ; r0 = load_addr (base)
+    sw r0, 39(fp)            ; vm_state.p24m_base = base
+
+    ; Use p24m_temps as scratch for base addr
+    la r2, p24m_temps
+    sw r0, 3(r2)             ; p24m_temps[3] = base
+
+    ; Read entry_point from offset 5
+    push fp
+    push r0
+    pop fp
+    lw r2, 5(fp)             ; r2 = entry_point (LE24)
+    pop fp
+    la r0, p24m_temps
+    sw r2, 0(r0)             ; p24m_temps[0] = entry_point
+
+    ; Read unit_count from offset 8
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    lbu r2, 8(r0)            ; r2 = unit_count
+    sb r2, 30(fp)            ; vm_state.unit_count = unit_count
+
+    ; Read unit_table_off from offset 15
+    push fp
+    push r0
+    pop fp
+    lw r2, 15(fp)            ; r2 = unit_table_off
+    pop fp
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    add r2, r0               ; r2 = base + unit_table_off
+    sw r2, 36(fp)            ; vm_state.unit_table_ptr = abs unit table addr
+
+    ; Read unit 0's IRT offset from unit_table[0] + 6
+    ; Unit table entry: base_addr(3) + global_base(3) + irt_off(3)
+    ; unit_table_ptr already set; read irt_off at +6
+    push fp
+    lw r0, 36(fp)            ; r0 = unit_table_ptr
+    push r0
+    pop fp
+    lw r2, 6(fp)             ; r2 = unit 0's irt_off (file-relative)
+    pop fp
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    add r2, r0               ; r2 = base + irt_off = abs IRT section addr
+    ; Skip 2-byte import_count prefix → actual IRT entries
+    add r2, 2
+    sw r2, 27(fp)            ; vm_state.irt_base = abs addr of unit 0's IRT entries
+
+    ; Read code_off from offset 21
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    push fp
+    push r0
+    pop fp
+    lw r2, 21(fp)            ; r2 = code_off
+    pop fp
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    add r2, r0               ; r2 = base + code_off = absolute code addr
+    sw r2, 18(fp)            ; vm_state.code = abs code addr
+
+    ; Read globals_off from offset 24
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    push fp
+    push r0
+    pop fp
+    lw r2, 24(fp)            ; r2 = globals_off
+    pop fp
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    add r2, r0               ; r2 = base + globals_off = absolute globals addr
+    sw r2, 12(fp)            ; vm_state.gp = abs globals addr
+
+    ; Set pc = entry_point
+    la r0, p24m_temps
+    lw r0, 0(r0)
+    sw r0, 0(fp)             ; vm_state.pc = entry_point
+
+    ; Check boot flags
+    la r0, init_done
+    jmp (r0)
+
+init_raw_code:
+    ; Not .p24m — check for .p24 header ("P24\0" magic)
+    pop r0                   ; r0 = load_addr
+    push r0
+    lbu r0, 0(r0)
+    lc r2, 0x50              ; 'P'
+    ceq r0, r2
+    brf init_raw_bytecode
+    pop r0
+    push r0
+    lbu r0, 1(r0)
+    lc r2, 0x32              ; '2'
+    ceq r0, r2
+    brf init_raw_bytecode
+    pop r0
+    push r0
+    lbu r0, 2(r0)
+    lc r2, 0x34              ; '4'
+    ceq r0, r2
+    brf init_raw_bytecode
+    pop r0
+    push r0
+    lbu r0, 3(r0)
+    ceq r0, z                ; '\0'
+    brf init_raw_bytecode
+
+    ; ── .p24 v1 header detected ──
+    ; Parse header: skip 18-byte header, set code/pc/gp
+    ; Header: magic(4) ver(1) entry(3) code_size(3) data_size(3)
+    ;         global_count(3) flags(1)
+    pop r0                   ; r0 = base
+    push r0
+
+    ; Read entry_point from offset 5
+    push fp
+    push r0
+    pop fp
+    lw r2, 5(fp)             ; r2 = entry_point
+    pop fp
+    sw r2, 0(fp)             ; vm_state.pc = entry_point
+
+    ; Read code_size from offset 8
+    pop r0                   ; r0 = base
+    push r0
+    push fp
+    push r0
+    pop fp
+    lw r2, 8(fp)             ; r2 = code_size
+    pop fp
+    la r0, p24m_temps
+    sw r2, 0(r0)             ; p24m_temps[0] = code_size
+
+    ; Read data_size from offset 11
+    pop r0                   ; r0 = base
+    push r0
+    push fp
+    push r0
+    pop fp
+    lw r2, 11(fp)            ; r2 = data_size
+    pop fp
+    la r0, p24m_temps
+    sw r2, 3(r0)             ; p24m_temps[3] = data_size
+
+    ; Set code = base + 18 (skip header)
+    pop r0                   ; r0 = base
+    push r0
+    add r0, 18
+    sw r0, 18(fp)            ; vm_state.code = base + 18
+
+    ; Set gp = base + 18 + code_size + data_size
+    ; (globals follow code+data in the loaded image)
+    ; But the .p24 file doesn't include globals bytes, so use globals_seg
+    ; gp stays as globals_seg (set during init above)
+
+    pop r0                   ; clean stack
+    la r0, init_done
+    jmp (r0)
+
+init_raw_bytecode:
+    ; No header — treat code_ptr as raw bytecode (pvmasm.s embedded code)
+    pop r0                   ; r0 = load_addr
+    sw r0, 18(fp)            ; vm_state.code = load_addr
+    ; pc already 0, gp already set to globals_seg
+
+    ; Fall through to init_done
+
+; ── Check boot flags and optionally print memory map ──
+init_done:
+    la r0, vm_state
+    push r0
+    pop fp
+    ; Read vm_flags
+    la r0, vm_flags
+    lbu r0, 0(r0)
+    ; Bit 0 = verbose boot?
+    lc r2, 1
+    and r0, r2
+    ceq r0, z
+    brt init_run             ; not set → skip verbose
+    ; ── Verbose boot: print memory map ──
+    ; Use sys_dump_state to print vm_state (reuses the existing handler)
+    la r0, sys_dump_state
+    jmp (r0)
+    ; Note: sys_dump_state jumps to vm_loop when done, which is correct —
+    ; it prints the state and then starts execution.
+
+init_run:
     la r0, vm_loop
     jmp (r0)
 
 ; ============================================================
 ; UART helpers
 ; ============================================================
+
+; uart_put_hex24 — print 24-bit value in r0 as 6 hex digits
+; Call via: jal r1, (r2) with r2 = uart_put_hex24, r0 = value
+; Non-leaf. Clobbers: r0, r1, r2.
+uart_put_hex24:
+    push r1
+    ; Save value
+    la r2, hex_temp
+    sw r0, 0(r2)
+    ; Print high byte (bits 23-16)
+    lc r2, 16
+    sra r0, r2
+    lcu r2, 0xFF
+    and r0, r2
+    la r2, uart_put_hex8
+    jal r1, (r2)
+    ; Print mid byte (bits 15-8)
+    la r0, hex_temp
+    lw r0, 0(r0)
+    lc r2, 8
+    sra r0, r2
+    lcu r2, 0xFF
+    and r0, r2
+    la r2, uart_put_hex8
+    jal r1, (r2)
+    ; Print low byte (bits 7-0)
+    la r0, hex_temp
+    lw r0, 0(r0)
+    lcu r2, 0xFF
+    and r0, r2
+    la r2, uart_put_hex8
+    jal r1, (r2)
+    pop r1
+    jmp (r1)
+
+; uart_put_hex8 — print byte in r0 as 2 hex digits
+; Non-leaf. Clobbers: r0, r1, r2.
+uart_put_hex8:
+    push r1
+    push r0
+    ; High nybble
+    lc r2, 4
+    sra r0, r2
+    lc r2, 0x0F
+    and r0, r2
+    la r2, uart_put_nybble
+    jal r1, (r2)
+    ; Low nybble
+    pop r0
+    lc r2, 0x0F
+    and r0, r2
+    la r2, uart_put_nybble
+    jal r1, (r2)
+    pop r1
+    jmp (r1)
+
+; uart_put_nybble — print low 4 bits of r0 as hex digit
+; Leaf. Clobbers: r0, r2.
+uart_put_nybble:
+    lc r2, 10
+    clu r0, r2              ; r0 < 10?
+    brt hex_digit_num
+    ; A-F: r0 - 10 + 'A'
+    add r0, -10
+    add r0, 65              ; 'A' = 65
+    bra hex_digit_out
+hex_digit_num:
+    ; 0-9: r0 + '0'
+    add r0, 48              ; '0' = 48
+hex_digit_out:
+    la r2, -65280
+hex_nybble_tx:
+    push r0
+    lb r0, 1(r2)
+    cls r0, z
+    brt hex_nybble_tx
+    pop r0
+    sb r0, 0(r2)
+    jmp (r1)
+
+hex_temp:
+    .word 0
 
 ; uart_putc — send byte in r0 to UART
 ; Call via: jal r1, (r2) with r2 = uart_putc
@@ -148,9 +493,9 @@ vm_loop:
     add r0, 1
     sw r0, 0(fp)
 
-    ; Bounds check: opcode must be < 97 (0x00..0x60)
+    ; Bounds check: opcode must be < 116 (0x00..0x73)
     mov r0, r2
-    lc r2, 97
+    lc r2, 119
     clu r0, r2
     brt opcode_ok
     la r0, op_invalid
@@ -915,6 +1260,13 @@ ret_no_rv:
     sw r0, 9(r2)
     ; ret_temps[9] = has_rv = 0
 ret_restore:
+    ; Check for cross-unit return: read static_link from frame
+    ; static_link is at fp_vm - 6
+    lw r0, 9(fp)
+    lw r2, -6(r0)           ; r2 = static_link
+    ; Save it for post-restore check
+    la r0, ret_temps
+    sw r2, 12(r0)           ; ret_temps[12] = static_link
     ; Restore pc from frame header (fp_vm - 12)
     lw r0, 9(fp)
     lw r2, -12(r0)
@@ -951,6 +1303,19 @@ ret_restore:
     add r0, 3
     sw r0, 3(fp)
 ret_done:
+    ; Check if this was a cross-unit return
+    ; static_link high byte nonzero => xcall frame
+    la r0, ret_temps
+    lw r0, 12(r0)           ; r0 = saved static_link
+    ; Extract high byte: shift right by 16
+    lc r2, 16
+    sra r0, r2              ; r0 = high byte of static_link
+    ceq r0, z
+    brt ret_no_xunit
+    ; Cross-unit return: restore current_unit = high_byte - 1
+    add r0, -1              ; r0 = caller's unit_id
+    sb r0, 33(fp)           ; current_unit = caller's unit_id
+ret_no_xunit:
     la r0, vm_loop
     jmp (r0)
 
@@ -1576,6 +1941,528 @@ storeb_not_nil:
     la r0, vm_loop
     jmp (r0)
 
+; 0x70 — memcpy: ( src dst len -- ) copy len bytes, memmove semantics
+op_memcpy:
+    ; fp = &vm_state
+    lw r2, 3(fp)         ; r2 = esp
+    lw r0, -3(r2)        ; r0 = len (TOS)
+    ceq r0, z
+    brf memcpy_nonzero
+    ; len is 0, just pop 3 words from eval stack
+    add r2, -9
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+memcpy_nonzero:
+    ; Save len to temp
+    la r2, memcpy_len_tmp
+    sw r0, 0(r2)
+    ; Save dst to temp
+    lw r2, 3(fp)
+    lw r0, -6(r2)        ; r0 = dst
+    la r2, memcpy_dst_tmp
+    sw r0, 0(r2)
+    ; Save src to temp
+    lw r2, 3(fp)
+    lw r0, -9(r2)        ; r0 = src
+    la r2, memcpy_src_tmp
+    sw r0, 0(r2)
+    ; Update esp (pop 3 words)
+    lw r2, 3(fp)
+    add r2, -9
+    sw r2, 3(fp)
+    ; Direction check: if src < dst, copy backward
+    ; r0 = src still
+    la r2, memcpy_dst_tmp
+    lw r2, 0(r2)         ; r2 = dst
+    clu r0, r2            ; flag = (src < dst)
+    brf memcpy_fwd_loop
+    la r0, memcpy_bwd_setup
+    jmp (r0)
+
+memcpy_fwd_loop:
+    ; Check len
+    la r0, memcpy_len_tmp
+    lw r2, 0(r0)
+    ceq r2, z
+    brf memcpy_fwd_step
+    la r0, vm_loop
+    jmp (r0)
+memcpy_fwd_step:
+    add r2, -1
+    sw r2, 0(r0)         ; len--
+    ; Load byte from src
+    la r0, memcpy_src_tmp
+    lw r0, 0(r0)         ; r0 = src
+    lbu r2, 0(r0)        ; r2 = *src
+    push r2               ; save byte
+    add r0, 1
+    la r2, memcpy_src_tmp
+    sw r0, 0(r2)         ; src++
+    ; Store byte to dst
+    la r0, memcpy_dst_tmp
+    lw r0, 0(r0)         ; r0 = dst
+    pop r2                ; r2 = byte
+    sb r2, 0(r0)          ; *dst = byte
+    add r0, 1
+    la r2, memcpy_dst_tmp
+    sw r0, 0(r2)         ; dst++
+    la r0, memcpy_fwd_loop
+    jmp (r0)
+
+memcpy_bwd_setup:
+    ; Start from end: adjust src and dst to last byte
+    la r0, memcpy_len_tmp
+    lw r0, 0(r0)         ; r0 = len
+    add r0, -1            ; r0 = len - 1
+    push r0               ; save offset
+    ; src += offset
+    la r2, memcpy_src_tmp
+    lw r2, 0(r2)         ; r2 = src
+    add r2, r0            ; r2 = src + len - 1
+    la r0, memcpy_src_tmp
+    sw r2, 0(r0)         ; update src
+    ; dst += offset
+    pop r0                ; r0 = offset
+    la r2, memcpy_dst_tmp
+    lw r2, 0(r2)         ; r2 = dst
+    add r2, r0            ; r2 = dst + len - 1
+    la r0, memcpy_dst_tmp
+    sw r2, 0(r0)         ; update dst
+    la r0, memcpy_bwd_loop
+    jmp (r0)
+
+memcpy_bwd_loop:
+    ; Check len
+    la r0, memcpy_len_tmp
+    lw r2, 0(r0)
+    ceq r2, z
+    brf memcpy_bwd_step
+    la r0, vm_loop
+    jmp (r0)
+memcpy_bwd_step:
+    add r2, -1
+    sw r2, 0(r0)         ; len--
+    ; Load byte from src (at end)
+    la r0, memcpy_src_tmp
+    lw r0, 0(r0)
+    lbu r2, 0(r0)
+    push r2
+    add r0, -1
+    la r2, memcpy_src_tmp
+    sw r0, 0(r2)         ; src--
+    ; Store byte to dst (at end)
+    la r0, memcpy_dst_tmp
+    lw r0, 0(r0)
+    pop r2
+    sb r2, 0(r0)
+    add r0, -1
+    la r2, memcpy_dst_tmp
+    sw r0, 0(r2)         ; dst--
+    la r0, memcpy_bwd_loop
+    jmp (r0)
+
+; Temporary storage for memcpy
+memcpy_src_tmp:
+    .word 0
+memcpy_dst_tmp:
+    .word 0
+memcpy_len_tmp:
+    .word 0
+
+; 0x71 — memset: ( dst val len -- ) fill len bytes with val
+op_memset:
+    ; fp = &vm_state
+    lw r2, 3(fp)         ; r2 = esp
+    lw r0, -3(r2)        ; r0 = len (TOS)
+    ceq r0, z
+    brf memset_nonzero
+    ; len is 0, just pop 3 words from eval stack
+    add r2, -9
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+memset_nonzero:
+    ; Save len to temp
+    la r2, memset_len_tmp
+    sw r0, 0(r2)
+    ; Save val to temp
+    lw r2, 3(fp)
+    lw r0, -6(r2)        ; r0 = val
+    la r2, memset_val_tmp
+    sw r0, 0(r2)
+    ; Save dst to temp
+    lw r2, 3(fp)
+    lw r0, -9(r2)        ; r0 = dst
+    la r2, memset_dst_tmp
+    sw r0, 0(r2)
+    ; Update esp (pop 3 words)
+    lw r2, 3(fp)
+    add r2, -9
+    sw r2, 3(fp)
+    la r0, memset_loop
+    jmp (r0)
+
+memset_loop:
+    ; Check len
+    la r0, memset_len_tmp
+    lw r2, 0(r0)
+    ceq r2, z
+    brf memset_step
+    la r0, vm_loop
+    jmp (r0)
+memset_step:
+    add r2, -1
+    sw r2, 0(r0)         ; len--
+    ; Store val byte to dst
+    la r0, memset_val_tmp
+    lw r0, 0(r0)         ; r0 = val
+    push r0               ; save val
+    la r0, memset_dst_tmp
+    lw r0, 0(r0)         ; r0 = dst
+    pop r2                ; r2 = val
+    sb r2, 0(r0)          ; *dst = val
+    add r0, 1
+    la r2, memset_dst_tmp
+    sw r0, 0(r2)         ; dst++
+    la r0, memset_loop
+    jmp (r0)
+
+; Temporary storage for memset
+memset_dst_tmp:
+    .word 0
+memset_val_tmp:
+    .word 0
+memset_len_tmp:
+    .word 0
+
+; 0x72 — memcmp: ( a b len -- result )
+; Compare len bytes at a and b lexicographically.
+; Push 0 if equal, -1 if a<b, 1 if a>b.
+op_memcmp:
+    ; fp = &vm_state
+    lw r2, 3(fp)         ; r2 = esp
+    lw r0, -3(r2)        ; r0 = len (TOS)
+    ceq r0, z
+    brf memcmp_nonzero
+    ; len is 0, pop 3 words, push 0 (equal)
+    add r2, -9
+    sw r2, 3(fp)
+    ; push 0 result
+    lw r2, 3(fp)
+    lc r0, 0
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+memcmp_nonzero:
+    ; Save len to temp
+    la r2, memcmp_len_tmp
+    sw r0, 0(r2)
+    ; Save b to temp
+    lw r2, 3(fp)
+    lw r0, -6(r2)        ; r0 = b
+    la r2, memcmp_b_tmp
+    sw r0, 0(r2)
+    ; Save a to temp
+    lw r2, 3(fp)
+    lw r0, -9(r2)        ; r0 = a
+    la r2, memcmp_a_tmp
+    sw r0, 0(r2)
+    ; Update esp (pop 3 words)
+    lw r2, 3(fp)
+    add r2, -9
+    sw r2, 3(fp)
+    la r0, memcmp_loop
+    jmp (r0)
+
+memcmp_loop:
+    ; Check len
+    la r0, memcmp_len_tmp
+    lw r2, 0(r0)
+    ceq r2, z
+    brf memcmp_step
+    ; All bytes equal — push 0
+    lw r2, 3(fp)
+    lc r0, 0
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+memcmp_step:
+    add r2, -1
+    sw r2, 0(r0)         ; len--
+    ; Load byte from a
+    la r0, memcmp_a_tmp
+    lw r0, 0(r0)         ; r0 = a ptr
+    lbu r2, 0(r0)        ; r2 = *a
+    push r2               ; save byte_a
+    add r0, 1
+    la r2, memcmp_a_tmp
+    sw r0, 0(r2)         ; a++
+    ; Load byte from b
+    la r0, memcmp_b_tmp
+    lw r0, 0(r0)         ; r0 = b ptr
+    lbu r2, 0(r0)        ; r2 = *b
+    push r2               ; save byte_b
+    add r0, 1
+    la r2, memcmp_b_tmp
+    sw r0, 0(r2)         ; b++
+    ; Compare: byte_b on top, byte_a below
+    pop r2                ; r2 = byte_b
+    pop r0                ; r0 = byte_a
+    ceq r0, r2
+    brf memcmp_loop       ; equal, continue
+    ; Not equal — determine result
+    clu r0, r2            ; flag = (byte_a < byte_b)
+    brf memcmp_greater
+    ; a < b: push -1 (0xFFFFFF in 24-bit)
+    lw r2, 3(fp)
+    la r0, -1
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+memcmp_greater:
+    ; a > b: push 1
+    lw r2, 3(fp)
+    lc r0, 1
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+
+; 0x75 — xloadg unit_id8 offset8: load global from another unit
+; Computes: gp + (unit_table[unit_id].global_base + offset) * 3
+; Pushes the value onto eval stack.
+op_xloadg:
+    ; fp = &vm_state
+    ; Fetch unit_id and offset from code[pc]
+    lw r0, 18(fp)           ; r0 = code base
+    lw r2, 0(fp)            ; r2 = pc
+    add r0, r2              ; r0 = &code[pc]
+    lbu r2, 0(r0)           ; r2 = unit_id
+    push r2
+    lbu r2, 1(r0)           ; r2 = offset
+    push r2
+    ; Advance pc by 2
+    lw r0, 0(fp)
+    add r0, 2
+    sw r0, 0(fp)
+    ; Look up unit_table[unit_id].global_base
+    ; unit_table entry is 9 bytes: base_addr(3) + global_base(3) + irt_off(3)
+    ; Stack: [unit_id, offset]
+    pop r0                   ; r0 = offset
+    la r2, xcall_temps
+    sw r0, 0(r2)            ; xcall_temps[0] = offset
+    pop r0                   ; r0 = unit_id
+    ; Compute unit_id * 9: *9 = *8 + *1, *8 = *2*2*2
+    mov r2, r0              ; r2 = uid (saved)
+    add r0, r0              ; r0 = uid*2
+    add r0, r0              ; r0 = uid*4
+    add r0, r0              ; r0 = uid*8
+    add r0, r2              ; r0 = uid*9
+    ; r0 = unit_id * 9
+    lw r2, 36(fp)           ; r2 = unit_table_ptr
+    add r0, r2              ; r0 = &unit_table[unit_id]
+    ; Read global_base from entry offset 3
+    push fp
+    push r0
+    pop fp
+    lw r0, 3(fp)            ; r0 = global_base (word index)
+    pop fp
+    ; Compute (global_base + offset) * 3
+    la r2, xcall_temps
+    lw r2, 0(r2)            ; r2 = offset
+    add r0, r2              ; r0 = global_base + offset
+    ; Multiply by 3
+    mov r2, r0
+    add r0, r0
+    add r0, r2              ; r0 = (global_base + offset) * 3
+    ; Add gp base
+    lw r2, 12(fp)           ; r2 = gp
+    add r0, r2              ; r0 = absolute address
+    ; Load value from that address
+    push fp
+    push r0
+    pop fp
+    lw r0, 0(fp)            ; r0 = value
+    pop fp
+    ; Push onto eval stack
+    lw r2, 3(fp)            ; r2 = esp
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+
+; 0x76 — xstoreg unit_id8 offset8: store to global in another unit
+; Pops value from eval stack, stores at gp + (unit_table[unit_id].global_base + offset) * 3
+op_xstoreg:
+    ; fp = &vm_state
+    ; Fetch unit_id and offset from code[pc]
+    lw r0, 18(fp)
+    lw r2, 0(fp)
+    add r0, r2
+    lbu r2, 0(r0)           ; r2 = unit_id
+    push r2
+    lbu r2, 1(r0)           ; r2 = offset
+    push r2
+    ; Advance pc by 2
+    lw r0, 0(fp)
+    add r0, 2
+    sw r0, 0(fp)
+    ; Pop value from eval stack
+    lw r2, 3(fp)
+    add r2, -3
+    sw r2, 3(fp)
+    lw r0, 0(r2)            ; r0 = value to store
+    la r2, xcall_temps
+    sw r0, 3(r2)            ; xcall_temps[3] = value
+    ; Compute target address (same as xloadg)
+    pop r0                   ; r0 = offset
+    la r2, xcall_temps
+    sw r0, 0(r2)            ; xcall_temps[0] = offset
+    pop r0                   ; r0 = unit_id
+    ; unit_id * 9
+    mov r2, r0
+    add r0, r0
+    add r0, r0
+    add r0, r0              ; r0 = uid*8
+    add r0, r2              ; r0 = uid*9
+    lw r2, 36(fp)           ; r2 = unit_table_ptr
+    add r0, r2              ; r0 = &unit_table[unit_id]
+    push fp
+    push r0
+    pop fp
+    lw r0, 3(fp)            ; r0 = global_base
+    pop fp
+    la r2, xcall_temps
+    lw r2, 0(r2)            ; r2 = offset
+    add r0, r2              ; r0 = global_base + offset
+    mov r2, r0
+    add r0, r0
+    add r0, r2              ; r0 = (global_base + offset) * 3
+    lw r2, 12(fp)           ; r2 = gp
+    add r0, r2              ; r0 = absolute address
+    ; Store value
+    la r2, xcall_temps
+    lw r2, 3(r2)            ; r2 = value
+    push fp
+    push r0
+    pop fp
+    sw r2, 0(fp)            ; mem[addr] = value
+    pop fp
+    la r0, vm_loop
+    jmp (r0)
+
+; Temporary storage for memcmp
+memcmp_a_tmp:
+    .word 0
+memcmp_b_tmp:
+    .word 0
+memcmp_len_tmp:
+    .word 0
+
+; 0x73 — jmp_ind: ( addr -- )
+; Jump to address on top of eval stack (indirect/computed jump).
+op_jmp_ind:
+    ; fp = &vm_state
+    lw r2, 3(fp)         ; r2 = esp
+    lw r0, -3(r2)        ; r0 = addr (TOS)
+    ; Pop the address
+    add r2, -3
+    sw r2, 3(fp)
+    ; Set pc = addr
+    sw r0, 0(fp)
+    la r0, vm_loop
+    jmp (r0)
+
+; 0x74 — xcall slot16: cross-unit procedure call via IRT
+; Reads 16-bit slot index from code, looks up absolute target address
+; from IRT[slot], builds call frame with caller unit_id in static_link
+; high byte, then jumps to target.
+; Encoding: [0x74, slot_lo, slot_hi] (3 bytes)
+op_xcall:
+    ; fp = &vm_state
+    ; 1. Fetch slot_lo from code[pc]
+    lw r0, 18(fp)           ; r0 = code base
+    lw r2, 0(fp)            ; r2 = pc
+    add r0, r2              ; r0 = &code[pc]
+    lbu r2, 0(r0)           ; r2 = slot_lo
+    push r2
+    lbu r2, 1(r0)           ; r2 = slot_hi
+    pop r0
+    ; Combine: slot = slot_lo | (slot_hi << 8)
+    push r0                  ; save slot_lo
+    lc r0, 8
+    shl r2, r0              ; r2 = slot_hi << 8
+    pop r0
+    or r0, r2               ; r0 = slot (16-bit)
+    push r0                  ; save slot
+
+    ; 2. Advance pc by 2 (skip slot operand), save as return_pc
+    lw r0, 0(fp)
+    add r0, 2
+    la r2, xcall_temps
+    sw r0, 0(r2)            ; xcall_temps[0] = return_pc
+
+    ; 3. Look up IRT: target = mem[irt_base + slot * 3]
+    ; COR24 stack: [slot]
+    pop r0                   ; r0 = slot
+    ; Compute slot * 3
+    mov r2, r0
+    add r0, r0
+    add r0, r2              ; r0 = slot * 3
+    ; Add irt_base
+    lw r2, 27(fp)           ; r2 = irt_base
+    add r0, r2              ; r0 = &IRT[slot]
+    ; Read target address from IRT
+    push fp
+    push r0
+    pop fp
+    lw r0, 0(fp)            ; r0 = target_pc (absolute)
+    pop fp
+    la r2, xcall_temps
+    sw r0, 3(r2)            ; xcall_temps[3] = target_pc
+
+    ; 4. Build call frame on call stack
+    lw r2, 6(fp)            ; r2 = csp
+    ; frame[0] = return_pc
+    la r0, xcall_temps
+    lw r0, 0(r0)
+    sw r0, 0(r2)
+    ; frame[3] = dynamic_link (current fp_vm)
+    lw r0, 9(fp)
+    sw r0, 3(r2)
+    ; frame[6] = static_link: encode caller unit_id in high byte
+    ; static_link = (current_unit + 1) << 16
+    ; The +1 ensures unit 0 also produces a nonzero high byte
+    lbu r0, 33(fp)          ; r0 = current_unit
+    add r0, 1               ; r0 = current_unit + 1
+    lc r1, 16
+    shl r0, r1              ; r0 = (current_unit + 1) << 16
+    sw r0, 6(r2)
+    ; frame[9] = saved_esp
+    lw r0, 3(fp)
+    sw r0, 9(r2)
+    ; Advance csp by 12
+    add r2, 12
+    sw r2, 6(fp)
+
+    ; 5. Set pc = target_pc
+    la r0, xcall_temps
+    lw r0, 3(r0)
+    sw r0, 0(fp)
+
+    ; 6. Jump to vm_loop
+    la r0, vm_loop
+    jmp (r0)
+
 ; 0x60 — sys id8: system call dispatch
 ; Uses sys_id_temp to preserve sys id across comparisons.
 ; All handlers expect fp = &vm_state on entry.
@@ -1617,7 +2504,7 @@ op_sys:
     ; id == 2 (GETC)?
     lc r2, 2
     ceq r0, r2
-    brt sys_getc
+    brt sys_getc_j
     ; Reload sys id
     push fp
     la r0, sys_id_temp
@@ -1628,7 +2515,7 @@ op_sys:
     ; id == 3 (LED)?
     lc r2, 3
     ceq r0, r2
-    brt sys_led
+    brt sys_led_j
     ; Reload sys id
     push fp
     la r0, sys_id_temp
@@ -1644,16 +2531,50 @@ op_sys:
     lc r2, 5
     ceq r0, r2
     brt sys_free_j
+    ; Reload sys id
+    push fp
+    la r0, sys_id_temp
+    push r0
+    pop fp
+    lw r0, 0(fp)
+    pop fp
+    ; id == 6 (READ_SWITCH)?
+    lc r2, 6
+    ceq r0, r2
+    brt sys_rdswitch_j
+    ; id == 7 (SET_IRT_BASE)?
+    lc r2, 7
+    ceq r0, r2
+    brt sys_set_irt_j
+    ; id == 8 (DUMP_STATE)?
+    lc r2, 8
+    ceq r0, r2
+    brt sys_dump_j
     ; Unknown sys id — trap
     la r0, op_invalid
     jmp (r0)
 
 ; Jump trampolines for far handlers
+sys_getc_j:
+    la r0, sys_getc
+    jmp (r0)
+sys_led_j:
+    la r0, sys_led
+    jmp (r0)
 sys_alloc_j:
     la r0, sys_alloc
     jmp (r0)
 sys_free_j:
     la r0, sys_free
+    jmp (r0)
+sys_rdswitch_j:
+    la r0, sys_read_switch
+    jmp (r0)
+sys_set_irt_j:
+    la r0, sys_set_irt_base
+    jmp (r0)
+sys_dump_j:
+    la r0, sys_dump_state
     jmp (r0)
 
 ; sys HALT (id=0): stop VM execution
@@ -1718,9 +2639,157 @@ sys_led:
     sw r2, 3(fp)
     ; r2 = new esp = &TOS
     lw r0, 0(r2)
-    ; r0 = LED state
-    la r2, -65024
+    ; r0 = LED state (1=on, 0=off from caller)
+    ; Hardware is active-low: invert bit 0 before writing
+    lc r2, 1
+    xor r0, r2
+    la r2, -65536
     sb r0, 0(r2)
+    la r0, vm_loop
+    jmp (r0)
+
+; sys DUMP_STATE (id=8): print vm_state to UART for debugging
+; Format: "VM: pc=NNNNNN esp=NNNNNN csp=NNNNNN fp=NNNNNN\n"
+;         "    gp=NNNNNN hp=NNNNNN code=NNNNNN irt=NNNNNN u=NN\n"
+sys_dump_state:
+    la r0, vm_state
+    push r0
+    pop fp
+    ; Line 1: "VM: pc="
+    la r0, dump_s_vm
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 0(fp)            ; pc
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " esp="
+    la r0, dump_s_esp
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 3(fp)            ; esp
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " csp="
+    la r0, dump_s_csp
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 6(fp)            ; csp
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " fp="
+    la r0, dump_s_fp
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 9(fp)            ; fp_vm
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; newline
+    lc r0, 10
+    la r2, uart_putc
+    jal r1, (r2)
+    ; Line 2: "    gp="
+    la r0, dump_s_gp
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 12(fp)           ; gp
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " hp="
+    la r0, dump_s_hp
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 15(fp)           ; hp
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " code="
+    la r0, dump_s_code
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 18(fp)           ; code
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " irt="
+    la r0, dump_s_irt
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 27(fp)           ; irt_base
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " u="
+    la r0, dump_s_u
+    la r2, uart_puts
+    jal r1, (r2)
+    lbu r0, 33(fp)          ; current_unit
+    la r2, uart_put_hex8
+    jal r1, (r2)
+    ; newline
+    lc r0, 10
+    la r2, uart_putc
+    jal r1, (r2)
+    la r0, vm_loop
+    jmp (r0)
+
+; String constants for dump_state
+dump_s_vm:
+    .byte 86, 77, 58, 32, 112, 99, 61, 0
+    ; "VM: pc=\0"
+dump_s_esp:
+    .byte 32, 101, 115, 112, 61, 0
+    ; " esp=\0"
+dump_s_csp:
+    .byte 32, 99, 115, 112, 61, 0
+    ; " csp=\0"
+dump_s_fp:
+    .byte 32, 102, 112, 61, 0
+    ; " fp=\0"
+dump_s_gp:
+    .byte 32, 32, 32, 32, 103, 112, 61, 0
+    ; "    gp=\0"
+dump_s_hp:
+    .byte 32, 104, 112, 61, 0
+    ; " hp=\0"
+dump_s_code:
+    .byte 32, 99, 111, 100, 101, 61, 0
+    ; " code=\0"
+dump_s_irt:
+    .byte 32, 105, 114, 116, 61, 0
+    ; " irt=\0"
+dump_s_u:
+    .byte 32, 117, 61, 0
+    ; " u=\0"
+
+; sys SET_IRT_BASE (id=7): pop address, set vm_state.irt_base
+sys_set_irt_base:
+    la r0, vm_state
+    push r0
+    pop fp
+    ; Pop address from eval stack
+    lw r2, 3(fp)
+    add r2, -3
+    sw r2, 3(fp)           ; esp -= 3
+    lw r0, 0(r2)           ; r0 = address (TOS)
+    sw r0, 27(fp)          ; irt_base = address
+    la r0, vm_loop
+    jmp (r0)
+
+; sys READ_SWITCH (id=6): read switch state, push onto eval stack
+sys_read_switch:
+    la r0, vm_state
+    push r0
+    pop fp
+    ; Read switch register (bit 0 = button S2)
+    la r2, -65536
+    lbu r0, 0(r2)
+    lc r2, 1
+    and r0, r2
+    ; Hardware is active-low: invert bit 0 so 1=pressed, 0=not pressed
+    lc r2, 1
+    xor r0, r2
+    ; Push result onto eval stack
+    lw r2, 3(fp)
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
     la r0, vm_loop
     jmp (r0)
 
@@ -1756,6 +2825,19 @@ sys_alloc:
     ; r2 = size
     add r0, r2
     ; r0 = new hp
+    ; Heap overflow check: new hp must be < heap_limit
+    push r0
+    la r2, heap_limit
+    push r2
+    pop fp
+    lw r2, 0(fp)
+    pop r0
+    clu r0, r2
+    brt alloc_no_overflow
+    lc r0, 5
+    la r2, vm_trap
+    jmp (r2)
+alloc_no_overflow:
     ; Store new hp to vm_state.hp
     la r2, vm_state
     push r2
@@ -1820,7 +2902,7 @@ op_stub:
     jmp (r0)
 
 ; ============================================================
-; Dispatch table (97 entries: opcodes 0x00 through 0x60)
+; Dispatch table (116 entries: opcodes 0x00 through 0x73)
 ; Each entry is a .word (3 bytes) holding the handler address
 ; ============================================================
 dispatch_table:
@@ -1935,6 +3017,33 @@ dispatch_table:
     .word op_invalid
     ; 0x60: sys
     .word op_sys
+    ; 0x61-0x6F: reserved (gap)
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    ; 0x70-0x72: Memory block operations
+    .word op_memcpy
+    .word op_memset
+    .word op_memcmp
+    ; 0x73: Indirect jump
+    .word op_jmp_ind
+    ; 0x74: Cross-unit call
+    .word op_xcall
+    ; 0x75-0x76: Cross-unit global access
+    .word op_xloadg
+    .word op_xstoreg
 
 ; ============================================================
 ; String constants
@@ -1963,6 +3072,8 @@ ret_temps:
     ; [6] retval
     .word 0
     ; [9] has_rv flag
+    .word 0
+    ; [12] static_link (for cross-unit return detection)
 
 ; ============================================================
 ; Temporary storage for nonlocal handlers (3 words = 9 bytes)
@@ -1979,8 +3090,22 @@ nonlocal_temps:
     .word 0
     ; [6] value (for storen)
 
+; Temporary storage for .p24m header parsing (2 words = 6 bytes)
+p24m_temps:
+    .word 0
+    ; [0] entry_point
+    .word 0
+    ; [3] base address
+
+; Temporary storage for xcall handler (2 words = 6 bytes)
+xcall_temps:
+    .word 0
+    ; [0] return_pc
+    .word 0
+    ; [3] target_pc
+
 ; ============================================================
-; VM state struct (9 words = 27 bytes)
+; VM state struct (14 words = 42 bytes)
 ; ============================================================
 vm_state:
     .word 0
@@ -2001,6 +3126,16 @@ vm_state:
     ; status (offset 21)
     .word 0
     ; trap_code (offset 24)
+    .word 0
+    ; irt_base (offset 27) — base address of import resolution table
+    .word 0
+    ; unit_count (offset 30) — number of loaded units (low byte)
+    .word 0
+    ; current_unit (offset 33) — currently executing unit ID (low byte)
+    .word 0
+    ; unit_table_ptr (offset 36) — absolute address of unit table
+    .word 0
+    ; p24m_base (offset 39) — base address of loaded .p24m image (0 if none)
 
 ; ============================================================
 ; Memory segments
@@ -2028,10 +3163,29 @@ vm_state:
 code_ptr:
     .word code_seg
 
+; vm_flags — patchable flags byte controlling VM behavior.
+; Set via: --patch <addr_of_vm_flags>=<value>
+; Bit 0: verbose boot — print memory map after .p24m/.p24 loading
+; Bit 1: (reserved for trace mode — not yet implemented)
+; Default: 0 (no flags set)
+vm_flags:
+    .byte 0
+
+; heap_limit — patchable word: heap allocation ceiling.
+; Default: 0x00F000 (~40KB usable heap above heap_seg).
+; The heap uses bare SRAM — no pre-allocated data needed.
+; For .p24m images loaded at 0x010000, leaves a 4KB guard gap.
+; Patch higher for more heap, or lower to restrict.
+; sys ALLOC traps (TRAP 5) when hp >= this value.
+; Set via: --patch <addr_of_heap_limit>=<value>
+heap_limit:
+    .word 0x00F000
+
 ;   DIV_ZERO:       push_s 1, push_s 0, div  → TRAP 1
 ;   STACK_OVERFLOW: (fill stack past limit)   → TRAP 2
 ;   STACK_UNDERFLOW: drop (on empty stack)    → TRAP 3
 ;   INVALID_OPCODE: .byte 0xFF               → TRAP 4
+;   HEAP_OVERFLOW:  sys ALLOC past heap_limit → TRAP 5
 ;   NIL_POINTER:    push_s 0, load           → TRAP 6
 code_seg:
     ; Print "OK\n"
@@ -2046,118 +3200,167 @@ code_seg:
     ; HALT (unreachable)
     .byte 96, 0
 
-; Globals segment (8 words = 24 bytes)
+; Globals segment (512 words = 1536 bytes)
+; Sized for programs with arrays (e.g., BASIC interpreter needs ~500 globals).
+; For .p24m images, globals are in the image itself (this is unused).
 globals_seg:
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    ; 48 lines × 32 bytes = 1536 bytes = 512 words
 
-; Call stack (grows upward, 96 bytes for nested frames)
+; Call stack (grows upward, 1536 bytes for nested/recursive frames)
 call_stack:
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    ; 48 lines x 32 bytes = 1536 bytes = 512 words
 
-; Eval stack (grows upward, 96 bytes)
+; Eval stack (grows upward, 1536 bytes)
 eval_stack:
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    ; 48 lines x 32 bytes = 1536 bytes = 512 words
 
-; Heap (grows upward, 96 bytes)
+; Heap (bump-allocated upward from heap_seg toward heap_limit)
+; No pre-allocated data — uses available SRAM between here and heap_limit.
+; Default heap_limit is 0x00F000 (~40KB usable heap for typical layouts).
+; For .p24m images loaded at 0x010000, this leaves a 4KB guard gap.
+; Patch heap_limit for more/less heap as needed.
 heap_seg:
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    .word 0

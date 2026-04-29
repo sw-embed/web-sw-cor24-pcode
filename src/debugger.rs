@@ -5,7 +5,7 @@ use crate::config;
 use crate::demos::DEMOS;
 use cor24_emulator::{EmulatorCore, StopReason};
 use gloo::timers::callback::Timeout;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
@@ -21,7 +21,13 @@ const DISASM_BEFORE: usize = 8;
 /// Number of COR24 disassembly lines to show after current PC.
 const DISASM_AFTER: usize = 16;
 
+/// COR24 register names indexed by 3-bit register number.
+/// Slot 5 is the constant `z` (also reads as the carry flag `c`).
+const HOST_REG_NAMES: [&str; 8] = ["r0", "r1", "r2", "fp", "sp", "z", "iv", "ir"];
+
 /// P-code opcode names indexed by opcode number.
+/// Mirrors pa24r's Opcode enum — keep in sync with
+/// `../sw-cor24-pcode/assembler/src/lib.rs`.
 const PCODE_NAMES: &[(u8, &str)] = &[
     (0x00, "halt"),
     (0x01, "push"),
@@ -72,6 +78,13 @@ const PCODE_NAMES: &[(u8, &str)] = &[
     (0x52, "loadb"),
     (0x53, "storeb"),
     (0x60, "sys"),
+    (0x70, "memcpy"),
+    (0x71, "memset"),
+    (0x72, "memcmp"),
+    (0x73, "jmp_ind"),
+    (0x74, "xcall"),
+    (0x75, "xloadg"),
+    (0x76, "xstoreg"),
 ];
 
 /// vm_state struct field offsets (each field is a 24-bit word = 3 bytes).
@@ -191,22 +204,17 @@ pub enum Msg {
     InputChanged(String),
     /// Handle keydown in UART input field.
     InputKeyDown(KeyboardEvent),
+    /// Toggle a p-code breakpoint at the given code offset.
+    ToggleBreakpoint(u32),
+    /// Clear all p-code breakpoints.
+    ClearBreakpoints,
 }
 
 /// Return the size in bytes of a p-code instruction given its opcode byte.
+/// Delegates to pa24r so the table cannot drift out of sync with the
+/// canonical p-code encoding.
 fn pcode_instr_size(op: u8) -> u32 {
-    match op {
-        // IMM24 (4 bytes): push, jmp, jz, jnz, call, loadg, storeg, addrg
-        0x01 | 0x30 | 0x31 | 0x32 | 0x33 | 0x54 | 0x55 | 0x56 => 4,
-        // IMM8 (2 bytes): push_s, trap, enter, loadl, storel, loada, storea, addrl, sys, ret, ret_v
-        0x02 | 0x36 | 0x40 | 0x42 | 0x43 | 0x44 | 0x45 | 0x57 | 0x60 | 0x34 | 0x35 => 2,
-        // D8_O8 (3 bytes): loadn, storen
-        0x58 | 0x59 => 3,
-        // D8_A24 (5 bytes): calln
-        0x5A => 5,
-        // NONE (1 byte): everything else
-        _ => 1,
-    }
+    pa24r::opcode_size(op) as u32
 }
 
 pub struct Debugger {
@@ -251,6 +259,14 @@ pub struct Debugger {
     input: String,
     /// UART receive queue (bytes waiting to be fed to emulator).
     uart_rx_queue: VecDeque<u8>,
+    /// P-code breakpoints (set of p-code code-segment offsets).
+    breakpoints: HashSet<u32>,
+    /// Byte size of the currently loaded demo's p-code segment (0 if none).
+    demo_code_size: u32,
+    /// Absolute address where the demo's globals region starts (0 if none).
+    demo_globals_base: u32,
+    /// Size in bytes of the demo's globals region (0 if none).
+    demo_globals_size: u32,
 }
 
 impl Debugger {
@@ -282,6 +298,9 @@ impl Debugger {
         self.instruction_count = 0;
 
         self.pending_code_base = None;
+        self.demo_code_size = 0;
+        self.demo_globals_base = 0;
+        self.demo_globals_size = 0;
         // Start paused — debugger mode.
         self.running = false;
         self.emulator.pause();
@@ -292,6 +311,19 @@ impl Debugger {
         self._tick_handle = Some(Timeout::new(TICK_MS, move || {
             link.send_message(Msg::Tick);
         }));
+    }
+
+    /// How many code bytes to treat as valid p-code for disassembly /
+    /// memory-map purposes. Prefers the explicit demo code size (when a
+    /// .p24 is loaded at 0x010000 above pvm.s); falls back to the
+    /// distance from code_base to the eval stack (works for the
+    /// built-in pvm.s code_seg default).
+    fn code_limit(&self, pstate: &PcodeState) -> u32 {
+        if self.demo_code_size > 0 {
+            self.demo_code_size
+        } else {
+            self.eval_stack_base.saturating_sub(pstate.code_base)
+        }
     }
 
     /// Read the p-code VM state struct from emulator memory.
@@ -334,28 +366,43 @@ impl Debugger {
             .map(|(_, n)| *n)
             .unwrap_or("???");
 
-        match opcode {
-            // 3-byte operand instructions (push, jmp, jz, jnz, call, calln)
-            0x01 | 0x30 | 0x31 | 0x32 | 0x33 | 0x35 => {
-                let operand = emu.read_word(addr + 1) & 0xFFFFFF;
-                (name, Some(operand), 4)
+        let size = pa24r::opcode_size(opcode) as u32;
+        let operand = match opcode {
+            // IMM24 (4 bytes): push, jmp, jz, jnz, call, loadg, storeg, addrg
+            0x01 | 0x30 | 0x31 | 0x32 | 0x33 | 0x44 | 0x45 | 0x47 => {
+                Some(emu.read_word(addr + 1) & 0xFFFFFF)
             }
-            // 1-byte operand instructions (push_s, trap, enter, loadl, storel, loadg, storeg,
-            // addrl, addrg, loada, storea, loadn, storen, sys)
-            0x02 | 0x36 | 0x40..=0x4B | 0x60 => {
-                let operand = emu.read_byte(addr + 1) as u32;
-                (name, Some(operand), 2)
+            // IMM8 (2 bytes): push_s, ret, trap, enter, loadl, storel,
+            //                 addrl, loada, storea, sys
+            0x02 | 0x34 | 0x36 | 0x40 | 0x42 | 0x43 | 0x46 | 0x48 | 0x49 | 0x60 => {
+                Some(emu.read_byte(addr + 1) as u32)
             }
-            // No operand
-            _ => (name, None, 1),
-        }
+            // IMM16 (3 bytes): xcall
+            0x74 => Some(emu.read_byte(addr + 1) as u32 | ((emu.read_byte(addr + 2) as u32) << 8)),
+            // D8_O8 (3 bytes): loadn, storen, xloadg, xstoreg
+            // Show depth.offset as a packed display (e.g. "01.02")
+            0x4A | 0x4B | 0x75 | 0x76 => {
+                let d = emu.read_byte(addr + 1) as u32;
+                let o = emu.read_byte(addr + 2) as u32;
+                Some((d << 8) | o)
+            }
+            // D8_A24 (5 bytes): calln
+            0x35 => {
+                let d = emu.read_byte(addr + 1) as u32;
+                let a = emu.read_word(addr + 2) & 0xFFFFFF;
+                Some((d << 24) | a)
+            }
+            // NONE (1 byte): all other opcodes have no operand
+            _ => None,
+        };
+        (name, operand, size)
     }
 
     /// Disassemble p-code instructions around the current p-code PC.
     fn disassemble_pcode(&self, pstate: &PcodeState, count: usize) -> Vec<PcodeInstr> {
         let mut instrs = Vec::new();
         let mut offset = 0u32;
-        let code_limit = self.eval_stack_base.saturating_sub(pstate.code_base);
+        let code_limit = self.code_limit(pstate);
 
         // Scan from start of code segment to build instruction list.
         // This handles variable-length instructions correctly.
@@ -368,8 +415,10 @@ impl Debugger {
         // Find index of current PC instruction.
         let current_idx = instrs.iter().position(|i| i.addr == pstate.pc).unwrap_or(0);
 
-        // Window around current PC.
-        let start = current_idx.saturating_sub(4);
+        // Window around current PC — show generous context so users can
+        // see surrounding structure (labels, loop bodies, etc.).
+        let before = 10;
+        let start = current_idx.saturating_sub(before);
         let end = (current_idx + count).min(instrs.len());
         instrs.into_iter().skip(start).take(end - start).collect()
     }
@@ -447,12 +496,18 @@ impl Debugger {
         if pstate.code_base == 0 {
             return Vec::new();
         }
-        let code_size = self.eval_stack_base.saturating_sub(pstate.code_base);
+        let code_size = self.code_limit(pstate);
         let eval_used = pstate.esp.saturating_sub(self.eval_stack_base);
         let eval_cap = self.call_stack_base.saturating_sub(self.eval_stack_base);
         let call_used = pstate.csp.saturating_sub(self.call_stack_base);
         // Globals and heap are after call stack in the memory map.
-        let globals_size = if pstate.gp > 0 { 24 } else { 0 }; // 8 words = 24 bytes
+        let globals_size = if self.demo_globals_size > 0 {
+            self.demo_globals_size
+        } else if pstate.gp > 0 {
+            24 // pvm.s default 8-word pool
+        } else {
+            0
+        };
         let heap_used = pstate.hp.saturating_sub(pstate.gp);
 
         vec![
@@ -494,7 +549,7 @@ impl Debugger {
         match region {
             HexRegion::Code => {
                 let start = pstate.code_base;
-                let end = self.eval_stack_base;
+                let end = start + self.code_limit(pstate);
                 (start, end)
             }
             HexRegion::EvalStack => {
@@ -509,8 +564,12 @@ impl Debugger {
             }
             HexRegion::Globals => {
                 let start = pstate.gp;
-                let end = pstate.gp + 24; // 8 words * 3 bytes
-                (start, end)
+                let size = if self.demo_globals_size > 0 {
+                    self.demo_globals_size
+                } else {
+                    24 // pvm.s default 8-word pool
+                };
+                (start, start + size)
             }
             HexRegion::Heap => {
                 let start = pstate.gp;
@@ -544,6 +603,32 @@ impl Debugger {
         self.read_call_frames(pstate).len()
     }
 
+    /// Step one full p-code fetch-decode-execute cycle.
+    /// Returns true if the p-code boundary was reached, false if the emulator
+    /// halted, the VM trapped, or the inner COR24 budget was exhausted.
+    fn step_one_pcode(&mut self) -> bool {
+        let mut i = 0u32;
+        loop {
+            let result = self.emulator.step();
+            self.instruction_count += result.instructions_run;
+            i += 1;
+            if matches!(result.reason, StopReason::Halted) {
+                self.halted = true;
+                self.running = false;
+                return false;
+            }
+            if self.read_pcode_state().status != 0 {
+                return false;
+            }
+            if i > 1 && self.emulator.snapshot().pc == self.vm_loop_addr {
+                return true;
+            }
+            if i >= 50_000 {
+                return false;
+            }
+        }
+    }
+
     /// Run p-code instructions until a depth condition is met.
     /// Returns when depth_check(current_depth) is true or on halt/timeout.
     fn run_until_depth<F>(&mut self, depth_check: F)
@@ -551,28 +636,11 @@ impl Debugger {
         F: Fn(usize) -> bool,
     {
         for _ in 0..500_000u32 {
-            // Step one p-code instruction
-            let mut i = 0u32;
-            loop {
-                let result = self.emulator.step();
-                self.instruction_count += result.instructions_run;
+            if !self.step_one_pcode() {
                 self.collect_uart();
-                i += 1;
-                if matches!(result.reason, StopReason::Halted) {
-                    self.halted = true;
-                    self.running = false;
-                    return;
-                }
-                if self.read_pcode_state().status != 0 {
-                    return;
-                }
-                if i > 1 && self.emulator.snapshot().pc == self.vm_loop_addr {
-                    break;
-                }
-                if i >= 50_000 {
-                    return;
-                }
+                return;
             }
+            self.collect_uart();
             let pstate = self.read_pcode_state();
             let depth = self.call_depth(&pstate);
             if depth_check(depth) {
@@ -655,34 +723,47 @@ impl Debugger {
     }
 
     /// Load a pre-assembled p-code image into emulator memory.
-    /// Places code+data at a safe address (0x010000), then relocates
-    /// data references in `push` instructions to absolute addresses
-    /// (pvm.s loadb/load/store use absolute addresses, not code-relative).
+    /// Places code + data + zero-init globals at a safe address
+    /// (0x010000), then relocates `push` operands that reference data
+    /// or globals to absolute addresses (pvm.s loadb/load/store use
+    /// absolute addresses, not code-relative).
     fn load_p24_image(&mut self, image: &pa24r::LoadedImage) {
         let load_addr = 0x010000_u32;
         let code_size = image.code.len() as u32;
-        let total = code_size + image.data.len() as u32;
+        let data_size = image.data.len() as u32;
+        let global_bytes = image.global_count * 3;
+        let code_data_end = code_size + data_size;
+        let image_end = code_data_end + global_bytes;
+        self.demo_code_size = code_size;
+        self.demo_globals_base = load_addr + code_data_end;
+        self.demo_globals_size = global_bytes;
 
-        // Write code + data contiguously
+        // Write code + data contiguously. Globals are zero-initialized;
+        // the emulator memory at load_addr + code_data_end is already
+        // zero after hard_reset (load_vm_binary runs it before we land
+        // here), so we only need to write code/data bytes.
         for (i, &b) in image.code.iter().chain(image.data.iter()).enumerate() {
             self.emulator.write_byte(load_addr + i as u32, b);
         }
+        // Explicitly zero the globals region in case memory is dirty
+        // (e.g. previous demo left values there).
+        for i in 0..global_bytes {
+            self.emulator.write_byte(load_addr + code_data_end + i, 0);
+        }
 
         // Relocate: scan for `push` (opcode 0x01, IMM24) instructions
-        // whose operand points into the data segment. These need to
-        // become absolute addresses (load_addr + offset).
+        // whose operand points into the data or globals segment. These
+        // need to become absolute addresses (load_addr + offset).
         let mut i: u32 = 0;
         while i < code_size {
             let op = self.emulator.read_byte(load_addr + i);
             let size = pcode_instr_size(op);
             if op == 0x01 && i + 4 <= code_size {
-                // push IMM24: read the 3-byte operand
                 let lo = self.emulator.read_byte(load_addr + i + 1) as u32;
                 let mid = self.emulator.read_byte(load_addr + i + 2) as u32;
                 let hi = self.emulator.read_byte(load_addr + i + 3) as u32;
                 let val = lo | (mid << 8) | (hi << 16);
-                // If operand points into data segment, relocate
-                if val >= code_size && val < total {
+                if val >= code_size && val < image_end {
                     let abs = val + load_addr;
                     self.emulator.write_byte(load_addr + i + 1, abs as u8);
                     self.emulator
@@ -735,6 +816,14 @@ impl Debugger {
             self.emulator.write_byte(base + 21, 0);
             self.emulator.write_byte(base + 22, 0);
             self.emulator.write_byte(base + 23, 0);
+            // gp = demo globals base (so loadg/storeg hit the demo's
+            // globals region, not pvm.s's built-in globals_seg)
+            if self.demo_globals_size > 0 {
+                let gp = self.demo_globals_base;
+                self.emulator.write_byte(base + 12, gp as u8);
+                self.emulator.write_byte(base + 13, (gp >> 8) as u8);
+                self.emulator.write_byte(base + 14, (gp >> 16) as u8);
+            }
         }
     }
 
@@ -790,6 +879,10 @@ impl Component for Debugger {
             pending_code_base: None,
             input: String::new(),
             uart_rx_queue: VecDeque::new(),
+            breakpoints: HashSet::new(),
+            demo_code_size: 0,
+            demo_globals_base: 0,
+            demo_globals_size: 0,
         }
     }
 
@@ -806,10 +899,40 @@ impl Component for Debugger {
 
                 self.feed_uart_bytes();
                 self.save_prev_state();
-                let result = self.emulator.run_batch(BATCH_SIZE);
-                self.instruction_count += result.instructions_run;
-                self.collect_uart();
-                self.check_halted(result.reason);
+
+                let pstate = self.read_pcode_state();
+                if pstate.code_base == 0 {
+                    // VM still booting — honor batch, no p-code breakpoints
+                    // apply yet.
+                    let result = self.emulator.run_batch(BATCH_SIZE);
+                    self.instruction_count += result.instructions_run;
+                    self.collect_uart();
+                    self.check_halted(result.reason);
+                } else if self.breakpoints.is_empty() {
+                    // Fast path: no breakpoints set, use run_batch directly.
+                    let result = self.emulator.run_batch(BATCH_SIZE);
+                    self.instruction_count += result.instructions_run;
+                    self.collect_uart();
+                    self.check_halted(result.reason);
+                } else {
+                    // Breakpoints active: step at p-code granularity and
+                    // check after each instruction. Cap per-tick work so
+                    // the browser stays responsive.
+                    const PCODE_PER_TICK: u32 = 2_000;
+                    for _ in 0..PCODE_PER_TICK {
+                        if !self.step_one_pcode() {
+                            break;
+                        }
+                        let pc = self.read_pcode_state().pc;
+                        if self.breakpoints.contains(&pc) {
+                            self.running = false;
+                            self._tick_handle = None;
+                            break;
+                        }
+                    }
+                    self.collect_uart();
+                    self.feed_uart_bytes();
+                }
 
                 if self.running && !self.halted {
                     self.schedule_tick(ctx);
@@ -851,34 +974,8 @@ impl Component for Debugger {
                         }
                     }
                 } else {
-                    // Run COR24 until host PC returns to vm_loop with a
-                    // different p-code PC, meaning one full p-code instruction
-                    // has completed its fetch-decode-execute cycle.
-                    // Run one full p-code fetch-decode-execute cycle:
-                    // step COR24 instructions until host PC returns to
-                    // vm_loop. Use do-while pattern (check after first step)
-                    // because we may already be sitting on vm_loop.
-                    let mut i = 0u32;
-                    loop {
-                        let result = self.emulator.step();
-                        self.instruction_count += result.instructions_run;
-                        self.collect_uart();
-                        i += 1;
-                        if matches!(result.reason, StopReason::Halted) {
-                            self.halted = true;
-                            self.running = false;
-                            break;
-                        }
-                        if self.read_pcode_state().status != 0 {
-                            break;
-                        }
-                        if i > 1 && self.emulator.snapshot().pc == self.vm_loop_addr {
-                            break;
-                        }
-                        if i >= 50_000 {
-                            break;
-                        }
-                    }
+                    self.step_one_pcode();
+                    self.collect_uart();
                 }
                 true
             }
@@ -922,27 +1019,11 @@ impl Component for Debugger {
                 }
                 let target_depth = self.call_depth(&pstate);
                 // First, step one p-code instruction.
-                let mut i = 0u32;
-                loop {
-                    let result = self.emulator.step();
-                    self.instruction_count += result.instructions_run;
+                if !self.step_one_pcode() {
                     self.collect_uart();
-                    i += 1;
-                    if matches!(result.reason, StopReason::Halted) {
-                        self.halted = true;
-                        self.running = false;
-                        return true;
-                    }
-                    if self.read_pcode_state().status != 0 {
-                        return true;
-                    }
-                    if i > 1 && self.emulator.snapshot().pc == self.vm_loop_addr {
-                        break;
-                    }
-                    if i >= 50_000 {
-                        return true;
-                    }
+                    return true;
                 }
+                self.collect_uart();
                 // If we entered a call, keep running until depth <= target.
                 let new_depth = self.call_depth(&self.read_pcode_state());
                 if new_depth > target_depth {
@@ -993,12 +1074,17 @@ impl Component for Debugger {
                     self.running = false;
                     self._tick_handle = None;
                     self.uart_rx_queue.clear();
+                    self.breakpoints.clear();
                     // Soft reset: preserves pvm.s code in memory
                     self.load_vm_binary();
                     // Load pre-assembled .p24 binary into code_seg
                     match pa24r::load_p24(demo.p24) {
                         Ok(image) => {
                             self.load_p24_image(&image);
+                            // Boot pvm.s init right away so the P-Code
+                            // Disassembly panel populates before the user
+                            // takes their first step.
+                            self.apply_pending_code_base();
                             // Stay paused — user clicks Run to start
                         }
                         Err(e) => {
@@ -1025,6 +1111,17 @@ impl Component for Debugger {
                     ctx.link().send_message(Msg::SendInput);
                 }
                 false
+            }
+            Msg::ToggleBreakpoint(addr) => {
+                if !self.breakpoints.insert(addr) {
+                    self.breakpoints.remove(&addr);
+                }
+                true
+            }
+            Msg::ClearBreakpoints => {
+                let changed = !self.breakpoints.is_empty();
+                self.breakpoints.clear();
+                changed
             }
         }
     }
@@ -1103,6 +1200,12 @@ impl Component for Debugger {
                             disabled={self.halted}>
                         { if self.running { "Pause" } else { "Run" } }
                     </button>
+                    <button onclick={link.callback(|_| Msg::ClearBreakpoints)}
+                            class="btn btn-toggle"
+                            disabled={self.breakpoints.is_empty()}
+                            title="Clear all p-code breakpoints">
+                        { format!("Clear BPs ({})", self.breakpoints.len()) }
+                    </button>
                     <button onclick={link.callback(|_| Msg::ToggleHexViewer)}
                             class={if self.show_hex_viewer { "btn btn-toggle active" } else { "btn btn-toggle" }}>
                         {"Memory"}
@@ -1160,19 +1263,25 @@ impl Component for Debugger {
                         <div class="disasm-view">
                             { for pcode_instrs.iter().map(|instr| {
                                 let is_current = instr.addr == pstate.pc;
-                                let line_class = if is_current {
-                                    "disasm-line current"
-                                } else {
-                                    "disasm-line"
+                                let has_bp = self.breakpoints.contains(&instr.addr);
+                                let line_class = match (is_current, has_bp) {
+                                    (true, true)  => "disasm-line current has-bp",
+                                    (true, false) => "disasm-line current",
+                                    (false, true) => "disasm-line has-bp",
+                                    _             => "disasm-line",
                                 };
                                 let operand_str = match instr.operand {
                                     Some(v) => format!(" {:06X}", v),
                                     None => String::new(),
                                 };
+                                let bp_addr = instr.addr;
+                                let on_click = link.callback(move |_| Msg::ToggleBreakpoint(bp_addr));
+                                let bp_glyph = if has_bp { "\u{25CF}" } else if is_current { "\u{25b6}" } else { " " };
                                 html! {
-                                    <div class={line_class}>
+                                    <div class={line_class} onclick={on_click}
+                                         title="Click to toggle breakpoint">
                                         <span class="disasm-marker">
-                                            { if is_current { "\u{25b6}" } else { " " } }
+                                            { bp_glyph }
                                         </span>
                                         <span class="disasm-addr">
                                             { format!("{:04X}", instr.addr) }
@@ -1390,17 +1499,17 @@ impl Component for Debugger {
                                             <td class="reg-name">{"PC"}</td>
                                             <td class="reg-val">{ format!("{:06X}", snap.pc) }</td>
                                         </tr>
-                                        { for (0..8).map(|i| {
+                                        { for HOST_REG_NAMES.iter().enumerate().map(|(i, name)| {
                                             let changed = snap.regs[i] != self.prev_regs[i];
                                             html! {
                                                 <tr class={if changed { "changed" } else { "" }}>
-                                                    <td class="reg-name">{ format!("r{i}") }</td>
+                                                    <td class="reg-name">{ *name }</td>
                                                     <td class="reg-val">{ format!("{:06X}", snap.regs[i]) }</td>
                                                 </tr>
                                             }
                                         })}
                                         <tr>
-                                            <td class="reg-name">{"C"}</td>
+                                            <td class="reg-name">{"c"}</td>
                                             <td class="reg-val">{ if snap.c { "1" } else { "0" } }</td>
                                         </tr>
                                     </table>
