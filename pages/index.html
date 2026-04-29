@@ -6,8 +6,8 @@
     <title>P-Code VM — COR24 Debugger</title>
     
 <script type="module">
-import init, * as bindings from '/web-sw-cor24-pcode/web-sw-cor24-pcode-97e1024d43fc8378.js';
-const wasm = await init({ module_or_path: '/web-sw-cor24-pcode/web-sw-cor24-pcode-97e1024d43fc8378_bg.wasm' });
+import init, * as bindings from '/web-sw-cor24-pcode/web-sw-cor24-pcode-33a6ef5b1f73cab9.js';
+const wasm = await init({ module_or_path: '/web-sw-cor24-pcode/web-sw-cor24-pcode-33a6ef5b1f73cab9_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -123,7 +123,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             40%, 80% { transform: rotate(10deg); }
         }
     </style>
-<link rel="modulepreload" href="/web-sw-cor24-pcode/web-sw-cor24-pcode-97e1024d43fc8378.js" crossorigin="anonymous" integrity="sha384-fs053knubEKzOtFjpjX1C9Hip9Z6yu8c0hKNHBlU0bbesnaz7Irij6hAidQI2IEE"><link rel="preload" href="/web-sw-cor24-pcode/web-sw-cor24-pcode-97e1024d43fc8378_bg.wasm" crossorigin="anonymous" integrity="sha384-0j2cjy6qcTGfZHAy2YUAw9qB2zacXSe8x4J1CWoE3kBJKt89McbHk6Cvosr1Vh31" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/web-sw-cor24-pcode/web-sw-cor24-pcode-33a6ef5b1f73cab9.js" crossorigin="anonymous" integrity="sha384-fs053knubEKzOtFjpjX1C9Hip9Z6yu8c0hKNHBlU0bbesnaz7Irij6hAidQI2IEE"><link rel="preload" href="/web-sw-cor24-pcode/web-sw-cor24-pcode-33a6ef5b1f73cab9_bg.wasm" crossorigin="anonymous" integrity="sha384-Icwy1fFLfjsXdwKcAeyh/CDukHaMGHaXNjsUy/eB6gSTLCX3FP/uuyy9mXQXB5R2" as="fetch" type="application/wasm"></head>
 <body>
     <div id="app"></div>
 </body>
