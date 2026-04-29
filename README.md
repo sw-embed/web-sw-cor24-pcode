@@ -56,8 +56,16 @@ cargo fmt --all
 - [web-sw-cor24-assembler](https://github.com/sw-embed/web-sw-cor24-assembler) -- COR24 assembly IDE (browser)
 - [COR24-TB](https://makerlisp.com) -- COR24 FPGA board
 
-## License
+## Links
 
-MIT License -- see [LICENSE](LICENSE) for details.
+- Blog: [Software Wrighter Lab](https://software-wrighter-lab.github.io/)
+- Discord: [Join the community](https://discord.com/invite/Ctzk5uHggZ)
+- YouTube: [Software Wrighter](https://www.youtube.com/@SoftwareWrighter)
+
+## Copyright
 
 Copyright (c) 2026 Michael A. Wright
+
+## License
+
+MIT -- see [LICENSE](LICENSE) for details.

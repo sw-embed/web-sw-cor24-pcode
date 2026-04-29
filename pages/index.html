@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>P-Code VM — COR24 Debugger</title>
+    
+<script type="module">
+import init, * as bindings from '/web-sw-cor24-pcode/web-sw-cor24-pcode-a1598ff7fe18fb80.js';
+const wasm = await init({ module_or_path: '/web-sw-cor24-pcode/web-sw-cor24-pcode-a1598ff7fe18fb80_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+    <link rel="stylesheet" href="/web-sw-cor24-pcode/debugger-c4815221815a5860.css" integrity="sha384-LWU1kgQzNtpwoGUqsArYSaqVHSFNvLFjvN1Li/rtql2M1KR1+wP6YtLAVAA15rTB"/>
+    <style>
+        /* Catppuccin Mocha */
+        :root {
+            --crust: #11111b;
+            --mantle: #181825;
+            --base: #1e1e2e;
+            --surface0: #313244;
+            --surface1: #45475a;
+            --surface2: #585b70;
+            --overlay0: #6c7086;
+            --overlay1: #7f849c;
+            --overlay2: #9399b2;
+            --subtext0: #a6adc8;
+            --subtext1: #bac2de;
+            --text: #cdd6f4;
+            --lavender: #b4befe;
+            --blue: #89b4fa;
+            --sapphire: #74c7ec;
+            --sky: #89dceb;
+            --teal: #94e2d5;
+            --green: #a6e3a1;
+            --yellow: #f9e2af;
+            --peach: #fab387;
+            --maroon: #eba0ac;
+            --red: #f38ba8;
+            --mauve: #cba6f7;
+            --pink: #f5c2e7;
+            --flamingo: #f2cdcd;
+            --rosewater: #f5e0dc;
+            --mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: var(--mono);
+            font-size: 15px;
+            background: var(--base);
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        header {
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--surface1);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        header h1 {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--blue);
+        }
+        header span {
+            font-size: 15px;
+            color: var(--overlay2);
+        }
+        #app {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-height: 0;
+        }
+        footer {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 20px;
+            font-size: 0.85em;
+            color: var(--overlay0);
+            border-top: 1px solid var(--surface1);
+            flex-wrap: wrap;
+            flex-shrink: 0;
+        }
+        footer a {
+            color: var(--blue);
+            text-decoration: none;
+        }
+        footer a:hover {
+            text-decoration: underline;
+        }
+        .footer-sep { color: var(--surface2); }
+
+        /* GitHub corner */
+        .github-corner {
+            position: absolute;
+            top: 0;
+            right: 0;
+            z-index: 100;
+        }
+        .github-corner svg {
+            fill: var(--blue);
+            color: var(--base);
+        }
+        .github-corner:hover .octo-arm {
+            animation: octocat-wave 560ms ease-in-out;
+        }
+        @keyframes octocat-wave {
+            0%, 100% { transform: rotate(0); }
+            20%, 60% { transform: rotate(-25deg); }
+            40%, 80% { transform: rotate(10deg); }
+        }
+    </style>
+<link rel="modulepreload" href="/web-sw-cor24-pcode/web-sw-cor24-pcode-a1598ff7fe18fb80.js" crossorigin="anonymous" integrity="sha384-fs053knubEKzOtFjpjX1C9Hip9Z6yu8c0hKNHBlU0bbesnaz7Irij6hAidQI2IEE"><link rel="preload" href="/web-sw-cor24-pcode/web-sw-cor24-pcode-a1598ff7fe18fb80_bg.wasm" crossorigin="anonymous" integrity="sha384-ONOqBWaCwejLyo7v4mwjblVbEhJBW320Dl2X+CNhF4D65ro6BcYG3HXrnL6vh2Aa" as="fetch" type="application/wasm"></head>
+<body>
+    <div id="app"></div>
+</body>
+</html>

@@ -1,0 +1,657 @@
+/* P-Code VM Debugger panel styles */
+
+.debugger {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* Control bar */
+.control-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--surface1);
+    background: var(--mantle);
+    flex-shrink: 0;
+}
+
+.btn {
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 4px 12px;
+    border: 1px solid var(--surface2);
+    border-radius: 4px;
+    cursor: pointer;
+    background: var(--surface0);
+    color: var(--text);
+    transition: background 0.15s;
+}
+
+.btn:hover:not(:disabled) {
+    background: var(--surface1);
+}
+
+.btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.btn-reset {
+    color: var(--red);
+    border-color: var(--red);
+}
+
+.btn-step {
+    color: var(--blue);
+    border-color: var(--blue);
+}
+
+.btn-step-host {
+    color: var(--overlay2);
+    border-color: var(--overlay2);
+}
+
+.btn-run {
+    color: var(--green);
+    border-color: var(--green);
+}
+
+.btn-toggle {
+    color: var(--overlay1);
+    border-color: var(--overlay1);
+    font-size: 11px;
+    padding: 3px 8px;
+}
+
+.btn-toggle.active {
+    color: var(--peach);
+    border-color: var(--peach);
+    background: var(--surface1);
+}
+
+.demo-select {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 3px 6px;
+    background: var(--surface0);
+    color: var(--text);
+    border: 1px solid var(--surface2);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.status {
+    font-size: 13px;
+    font-weight: 600;
+    margin-left: 8px;
+    color: var(--yellow);
+}
+
+.pc-display {
+    font-size: 13px;
+    color: var(--blue);
+    margin-left: auto;
+}
+
+.host-pc {
+    color: var(--overlay2);
+    margin-left: 12px;
+}
+
+.instr-count {
+    font-size: 12px;
+    color: var(--overlay1);
+    margin-left: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Memory region map bar */
+.memory-map {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 16px;
+    border-bottom: 1px solid var(--surface1);
+    flex-shrink: 0;
+}
+
+.memory-map-label {
+    font-size: 11px;
+    color: var(--overlay1);
+    flex-shrink: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.region-bar {
+    display: flex;
+    height: 16px;
+    border-radius: 3px;
+    overflow: hidden;
+    font-size: 10px;
+    flex: 1;
+}
+
+.region-bar .region {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--crust);
+    font-weight: 700;
+    min-width: 2px;
+    transition: width 0.3s;
+}
+
+.region-bar .region-code { background: var(--blue); }
+.region-bar .region-estack { background: var(--green); }
+.region-bar .region-cstack { background: var(--peach); }
+.region-bar .region-globals { background: var(--mauve); }
+.region-bar .region-heap { background: var(--yellow); }
+
+/* Main panels — flexible columns */
+.panels {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+}
+
+.panel {
+    padding: 8px 12px;
+    overflow-y: auto;
+}
+
+.panel h3 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--blue);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* P-Code disassembly panel (left) */
+.panel-disasm {
+    width: 280px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--surface1);
+    background: var(--mantle);
+}
+
+.disasm-init {
+    font-size: 12px;
+    color: var(--overlay1);
+    font-style: italic;
+    padding: 4px 0;
+}
+
+.disasm-view {
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.disasm-label {
+    color: var(--mauve);
+    font-weight: 600;
+    padding: 2px 0 0 0;
+}
+
+.disasm-line {
+    display: flex;
+    gap: 6px;
+    padding: 1px 4px;
+    border-radius: 2px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.disasm-line:hover {
+    background: var(--surface0);
+}
+
+.disasm-line.current {
+    background: var(--surface0);
+    font-weight: 600;
+}
+
+.disasm-line.has-bp .disasm-marker {
+    color: var(--red);
+}
+
+.disasm-line.has-bp {
+    background: color-mix(in srgb, var(--red) 15%, transparent);
+}
+
+.disasm-line.current.has-bp {
+    background: color-mix(in srgb, var(--red) 30%, var(--surface0));
+}
+
+.disasm-marker {
+    width: 12px;
+    flex-shrink: 0;
+    color: var(--yellow);
+}
+
+.disasm-addr {
+    color: var(--overlay1);
+    width: 40px;
+    flex-shrink: 0;
+}
+
+.disasm-line.current .disasm-addr {
+    color: var(--peach);
+}
+
+.disasm-opcode {
+    color: var(--sapphire);
+    width: 60px;
+    flex-shrink: 0;
+}
+
+.disasm-line.current .disasm-opcode {
+    color: var(--yellow);
+}
+
+.disasm-operand {
+    color: var(--text);
+}
+
+.disasm-line.current .disasm-operand {
+    color: var(--yellow);
+}
+
+.disasm-instr {
+    color: var(--text);
+}
+
+.disasm-line.current .disasm-instr {
+    color: var(--yellow);
+}
+
+/* Center column — stacked VM state + eval stack + output */
+.panel-center {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+/* VM State panel */
+.panel-vm-state {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--surface1);
+}
+
+.state-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.state-table td {
+    padding: 2px 4px;
+}
+
+.state-name {
+    color: var(--overlay2);
+    width: 30px;
+}
+
+.state-val {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.state-table tr.changed .state-val {
+    color: var(--green);
+    font-weight: 700;
+}
+
+.state-table tr.changed .state-name {
+    color: var(--green);
+}
+
+.state-table tr.trap .state-val {
+    color: var(--red);
+    font-weight: 700;
+}
+
+.state-table tr.trap .state-name {
+    color: var(--red);
+}
+
+/* Eval stack panel */
+.panel-eval-stack {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--surface1);
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.stack-table tr.changed .stack-val,
+.stack-table tr.changed .stack-dec {
+    color: var(--green);
+    font-weight: 700;
+}
+
+.stack-table tr.changed .stack-label {
+    color: var(--green);
+}
+
+.stack-view {
+    font-size: 13px;
+}
+
+.stack-view .empty {
+    color: var(--overlay0);
+    font-style: italic;
+}
+
+.stack-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.stack-table td {
+    padding: 1px 4px;
+}
+
+.stack-label {
+    color: var(--yellow);
+    width: 30px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.stack-val {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    width: 60px;
+}
+
+.stack-dec {
+    color: var(--overlay1);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    font-size: 12px;
+}
+
+/* Call frame panel */
+.panel-call-frames {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--surface1);
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 8px 12px;
+}
+
+.panel-call-frames h3 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--blue);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.frames-view {
+    font-size: 13px;
+}
+
+.frames-view .empty {
+    color: var(--overlay0);
+    font-style: italic;
+}
+
+.frame-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.frame-table td {
+    padding: 1px 4px;
+    font-variant-numeric: tabular-nums;
+}
+
+.frame-header td {
+    color: var(--overlay1);
+    font-weight: 600;
+    font-size: 11px;
+    border-bottom: 1px solid var(--surface1);
+    padding-bottom: 2px;
+}
+
+.frame-idx {
+    color: var(--overlay1);
+    width: 16px;
+}
+
+.frame-val {
+    color: var(--text);
+    text-align: right;
+}
+
+.frame-current .frame-val {
+    color: var(--yellow);
+    font-weight: 700;
+}
+
+.frame-current .frame-idx {
+    color: var(--yellow);
+}
+
+/* Output panel */
+.panel-output {
+    flex: 1;
+    min-height: 60px;
+    overflow-y: auto;
+}
+
+.output-text {
+    font-size: 13px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--subtext1);
+    background: var(--crust);
+    padding: 8px;
+    border-radius: 4px;
+    flex: 1;
+    overflow-y: auto;
+}
+
+/* UART input field */
+.uart-input {
+    flex-shrink: 0;
+    padding: 4px 0 0 0;
+}
+
+.uart-field {
+    width: 100%;
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 4px 8px;
+    background: var(--crust);
+    color: var(--text);
+    border: 1px solid var(--surface2);
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+.uart-field::placeholder {
+    color: var(--overlay0);
+}
+
+.uart-field:focus {
+    outline: none;
+    border-color: var(--blue);
+}
+
+/* Hex memory viewer panel */
+.panel-hex {
+    width: 520px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--surface1);
+    background: var(--mantle);
+    overflow-y: auto;
+    padding: 8px 12px;
+}
+
+.hex-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.hex-header h3 {
+    margin-bottom: 0;
+}
+
+.hex-select {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 2px 6px;
+    background: var(--surface0);
+    color: var(--text);
+    border: 1px solid var(--surface2);
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.hex-info {
+    font-size: 11px;
+    color: var(--overlay1);
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+}
+
+.hex-dump {
+    overflow-y: auto;
+}
+
+.hex-dump .empty {
+    color: var(--overlay0);
+    font-style: italic;
+    font-size: 12px;
+}
+
+.hex-table {
+    border-collapse: collapse;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    width: 100%;
+}
+
+.hex-table td {
+    padding: 1px 3px;
+    white-space: nowrap;
+}
+
+.hex-header-row td {
+    color: var(--overlay1);
+    font-weight: 600;
+    font-size: 10px;
+    border-bottom: 1px solid var(--surface1);
+    padding-bottom: 2px;
+}
+
+.hex-addr {
+    color: var(--overlay1);
+    padding-right: 8px !important;
+}
+
+.hex-col-hdr {
+    text-align: center;
+    width: 22px;
+}
+
+.hex-byte {
+    color: var(--text);
+    text-align: center;
+    width: 22px;
+}
+
+.hex-byte.hex-hl {
+    color: var(--yellow);
+    font-weight: 700;
+    background: var(--surface0);
+    border-radius: 2px;
+}
+
+.hex-byte.hex-pad {
+    color: var(--surface1);
+}
+
+.hex-ascii {
+    color: var(--subtext0);
+    padding-left: 8px !important;
+    letter-spacing: 0.05em;
+}
+
+.hex-ascii-hdr {
+    padding-left: 8px !important;
+}
+
+/* COR24 host drill-down panel (right, collapsible) */
+.panel-host {
+    width: 320px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--surface1);
+    background: var(--mantle);
+    overflow-y: auto;
+}
+
+.panel-host h3 {
+    color: var(--peach);
+}
+
+.host-regs {
+    margin-bottom: 12px;
+}
+
+.host-disasm {
+    font-size: 13px;
+    line-height: 1.5;
+    border-top: 1px solid var(--surface1);
+    padding-top: 8px;
+}
+
+/* Register table (used in host panel) */
+.reg-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.reg-table td {
+    padding: 2px 4px;
+}
+
+.reg-name {
+    color: var(--overlay2);
+    width: 30px;
+}
+
+.reg-val {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.reg-table tr.changed .reg-val {
+    color: var(--green);
+    font-weight: 700;
+}
+
+.reg-table tr.changed .reg-name {
+    color: var(--green);
+}
